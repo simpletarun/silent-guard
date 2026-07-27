@@ -1,5 +1,5 @@
 {
-  "name": "session-guardian",
+  "name": "silent-guard",
   "version": "1.0.0",
   "description": "Browser extension that monitors session security risks",
   "scripts": {

@@ -65,7 +65,7 @@ export default function App() {
     return (
       <div className="app-loading">
         <div className="loading-spinner" />
-        <p>Loading Session Guardian…</p>
+        <p>Loading SilentGuard…</p>
       </div>
     )
   }
@@ -129,7 +129,7 @@ export default function App() {
     <ErrorBoundary>
       <div className="app">
         <header className="app-header">
-          <h1>Session Guardian</h1>
+          <h1>SilentGuard</h1>
         </header>
 
         <div className="tab-bar" role="tablist" aria-label="Security categories">

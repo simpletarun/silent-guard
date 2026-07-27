@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ Session Guardian
+# 🛡️ SilentGuard
 
 **Real-time browser security monitoring for Chrome**
 
@@ -12,7 +12,7 @@
 
 ---
 
-Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsistencies, and more — all inside your browser.
+Detects cookie theft, fingerprinting, phishing, DNS inconsistencies, and more — all inside your browser.
 
 </div>
 
@@ -20,7 +20,6 @@ Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsist
 
 | Category | Detection |
 |----------|-----------|
-| **Session Hijack** | Monitors auth cookies on 25 high-value domains; cross-references IP changes within 24h |
 | **Cookie Security** | Detects auth cookie changes, missing `secure`/`httpOnly` flags, insecure `sameSite` |
 | **Fingerprinting** | Hooks canvas, AudioContext, WebRTC APIs; monitors screen/UA/timezone changes |
 | **Phishing** | Checks URLs against OpenPhish and PhishTank feeds |
@@ -41,14 +40,14 @@ Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsist
 ## 🚀 Getting Started
 
 ```bash
-git clone https://github.com/simpletarun/session-guardian.git
-cd session-guardian
+git clone https://github.com/simpletarun/silent-guard.git
+cd silent-guard
 npm install
 npm run build
 ```
 
 ### Download
-Grab the latest build from [Releases](https://github.com/simpletarun/session-guardian/releases) — download the ZIP, unzip, and load in Chrome.
+Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, unzip, and load in Chrome.
 
 ### Load in Chrome
 1. Open `chrome://extensions`
@@ -58,7 +57,7 @@ Grab the latest build from [Releases](https://github.com/simpletarun/session-gua
 
 ## 📱 Usage
 
-Click the Session Guardian icon in the toolbar. Seven dashboards:
+Click the SilentGuard icon in the toolbar. Seven dashboards:
 
 | Tab | Monitors |
 |-----|----------|
@@ -68,7 +67,7 @@ Click the Session Guardian icon in the toolbar. Seven dashboards:
 | **Extensions** | Installed extension risk levels |
 | **Passwords** | Password strength indicators |
 | **Privacy** | Trackers, phishing results, security headers |
-| **Accounts** | Tracked accounts, cookie changes, session events |
+| **Accounts** | Tracked accounts, cookie changes, account activity |
 
 ## 🏗️ Architecture
 
@@ -81,7 +80,6 @@ src/
 │   ├── notifications.ts     # Chrome notification dispatcher
 │   ├── badge.ts             # Toolbar badge (score / alert count)
 │   └── monitors/            # 15 security monitors
-│       ├── sessionHijackMonitor.ts
 │       ├── cookieMonitor.ts
 │       ├── browserMonitor.ts
 │       ├── phishingMonitor.ts

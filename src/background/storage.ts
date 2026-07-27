@@ -1,6 +1,6 @@
 import { StorageData, SecurityState, GlobalSettings, DEFAULT_GLOBAL_SETTINGS, RiskEvent, AccountSite, CategoryState, createInitialState, SecurityCategory } from '../types'
 
-const STORAGE_KEY = 'session_guardian_state'
+const STORAGE_KEY = 'silent_guard_state'
 const DATA_VERSION = 2
 const EVENT_HISTORY_MAX_AGE_MS = 7 * 86400000
 

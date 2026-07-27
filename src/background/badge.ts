@@ -17,12 +17,12 @@ export async function updateBadge(): Promise<void> {
     if (unacked > 0) {
       chrome.action.setBadgeText({ text: unacked > 99 ? '99+' : String(unacked) }).catch(() => {})
       chrome.action.setBadgeBackgroundColor({ color: '#ff4757' }).catch(() => {})
-      chrome.action.setTitle({ title: `Session Guardian — ${avgScore}/100 · ${unacked} alert(s) unresolved` }).catch(() => {})
+      chrome.action.setTitle({ title: `SilentGuard — ${avgScore}/100 · ${unacked} alert(s) unresolved` }).catch(() => {})
     } else {
       chrome.action.setBadgeText({ text: String(avgScore) }).catch(() => {})
       const color = avgScore >= 80 ? '#2ed573' : avgScore >= 60 ? '#ffa502' : avgScore >= 40 ? '#ff6348' : '#ff4757'
       chrome.action.setBadgeBackgroundColor({ color }).catch(() => {})
-      chrome.action.setTitle({ title: `Session Guardian — ${avgScore}/100` }).catch(() => {})
+      chrome.action.setTitle({ title: `SilentGuard — ${avgScore}/100` }).catch(() => {})
     }
   } catch (e) {
     console.error('updateBadge failed:', e)

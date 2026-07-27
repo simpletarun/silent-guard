@@ -44,7 +44,7 @@ async function processIncidentQueue(): Promise<void> {
 
 export function storageChangedHandler(changes: { [key: string]: chrome.storage.StorageChange }, area: string): void {
   if (area !== 'local') return
-  const stateChange = changes['session_guardian_state']
+  const stateChange = changes['silent_guard_state']
   if (!stateChange) return
 
   const newVal = stateChange.newValue as { securityState?: { correlatedIncidents?: any[] } } | undefined
@@ -147,7 +147,7 @@ export async function isolateNetwork(): Promise<void> {
     severity: 'critical',
     title: 'Network isolation activated',
     description: 'Non-essential extensions disabled, browsing data cleared',
-    source: 'session-guardian',
+    source: 'silent-guard',
     timestamp: Date.now(),
     acknowledged: false,
   }
