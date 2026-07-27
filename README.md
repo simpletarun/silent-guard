@@ -1,28 +1,44 @@
-# Session Guardian 🔒
+<div align="center">
 
-A Chrome extension that monitors browser sessions for security threats in real time. Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsistencies, and more.
+# 🛡️ Session Guardian
 
-## Features
+**Real-time browser security monitoring for Chrome**
 
-- **Session Hijack Detection** — monitors auth cookies on high-value domains (secure/httpOnly flags) and cross-references IP changes
-- **Cookie Security** — detects auth cookie changes, missing secure flags, and insecure sameSite settings
-- **Fingerprinting Detection** — hooks canvas, AudioContext, WebRTC APIs to detect fingerprinting attempts; monitors screen/timezone/UA for changes
-- **Phishing Detection** — checks URLs against OpenPhish and PhishTank feeds
-- **DNS Consistency Check** — compares DNS resolutions across Cloudflare, Google, and doh.li resolvers
-- **Certificate Monitoring** — queries crt.sh for recent certificate transparency logs on high-value domains
-- **Network Security** — monitors IP changes, VPN/proxy/TOR detection via IP geolocation
-- **Extension Risk Scanning** — evaluates installed extensions for dangerous permissions
-- **Security Headers** — checks HTTP responses for HSTS, CSP, XFO, XSS, Referrer-Policy, Permissions-Policy headers
-- **Threat Intel** — checks domains against URLHaus and AlienVault OTX APIs
-- **Anomaly Detection** — heuristic analysis of browsing patterns (unusual hours, tab spikes, new domain bursts)
-- **Correlation Engine** — cross-correlates events across categories using pattern-matching rules
-- **Tracker Detection** — identifies 78+ known tracker domains, tracking pixels, hidden elements, and storage tracking keys
-- **URL Cleaner** — strips 35+ tracking parameters from URLs
-- **Session Auto-Kill** — clears cookies and opens logout URLs for compromised services
-- **Forensic Snapshots** — captures tabs, extensions, cookies, network state, and fingerprint during incidents
-- **Weekly Digest** — timeline of security events with score trends and recommendations
+![Version](https://img.shields.io/badge/version-1.0.0-00A8FF?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-00E676?style=flat-square)
+![Chrome](https://img.shields.io/badge/chrome-MV3-071A2E?style=flat-square)
+![React](https://img.shields.io/badge/react-18-00E5FF?style=flat-square)
+![TypeScript](https://img.shields.io/badge/typescript-5-00A8FF?style=flat-square)
 
-## Installation
+---
+
+Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsistencies, and more — all inside your browser.
+
+</div>
+
+## ✨ Features
+
+| Category | Detection |
+|----------|-----------|
+| **Session Hijack** | Monitors auth cookies on 25 high-value domains; cross-references IP changes within 24h |
+| **Cookie Security** | Detects auth cookie changes, missing `secure`/`httpOnly` flags, insecure `sameSite` |
+| **Fingerprinting** | Hooks canvas, AudioContext, WebRTC APIs; monitors screen/UA/timezone changes |
+| **Phishing** | Checks URLs against OpenPhish and PhishTank feeds |
+| **DNS** | Compares resolutions across Cloudflare, Google, and doh.li resolvers |
+| **Certificates** | Queries crt.sh for recent CT logs on monitored domains |
+| **Network** | IP change alerts, VPN/proxy/TOR detection via geolocation |
+| **Extensions** | Scans installed extensions for dangerous permissions |
+| **Security Headers** | Audits HSTS, CSP, XFO, XSS, Referrer-Policy, Permissions-Policy |
+| **Threat Intel** | Checks domains against URLHaus and AlienVault OTX |
+| **Anomalies** | Heuristic analysis: unusual hours, tab spikes, new domain bursts |
+| **Correlation** | Pattern-matches events across categories into correlated incidents |
+| **Trackers** | Identifies 78+ tracker domains, tracking pixels, hidden elements, storage keys |
+| **URL Cleaner** | Strips 35+ tracking parameters from URLs |
+| **Auto-Kill** | Clears cookies + opens logout URLs for compromised services |
+| **Forensics** | Captures tabs, extensions, cookies, network, fingerprint on incidents |
+| **Weekly Digest** | Timeline with score trends, top threats, recommendations |
+
+## 🚀 Getting Started
 
 ```bash
 git clone https://github.com/simpletarun/session-guardian.git
@@ -31,43 +47,73 @@ npm install
 npm run build
 ```
 
-Load in Chrome: `chrome://extensions` → Developer mode → Load unpacked → select `dist/`
+Load in Chrome:
+1. Open `chrome://extensions`
+2. Enable **Developer mode** (top right)
+3. Click **Load unpacked**
+4. Select the `dist/` folder
 
-## Usage
+## 📱 Usage
 
-Click the toolbar icon to open the popup. Seven category dashboards:
+Click the Session Guardian icon in the toolbar. Seven dashboards:
 
-| Tab | What it shows |
-|-----|--------------|
-| Overview | Overall score, correlated incidents, timeline, weekly digests |
-| Network | IP, VPN status, DNS results, cert checks, threat intel matches |
-| Device | Browser fingerprint stats, anomaly events |
-| Extensions | Installed extension risk levels |
-| Passwords | Password strength indicators |
-| Privacy | Trackers found, phishing results, security headers |
-| Accounts | Tracked accounts, cookie changes, session events |
+| Tab | Monitors |
+|-----|----------|
+| **Overview** | Overall score, correlated incidents, timeline, weekly digests |
+| **Network** | IP, VPN status, DNS results, cert checks, threat intel |
+| **Device** | Fingerprint stats, anomaly events |
+| **Extensions** | Installed extension risk levels |
+| **Passwords** | Password strength indicators |
+| **Privacy** | Trackers, phishing results, security headers |
+| **Accounts** | Tracked accounts, cookie changes, session events |
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 src/
-├── background/          # Service worker
-│   ├── index.ts         # Message router, alarms, lifecycle
-│   ├── engine.ts        # Scoring engine (7 categories, 0-100)
-│   ├── storage.ts       # Chrome storage state management
-│   ├── notifications.ts # Chrome notification dispatcher
-│   ├── badge.ts         # Toolbar badge (score / alert count)
-│   └── monitors/        # 15 security monitors
-├── content/             # Page scanners (trackers, fingerprinting, URL cleaner)
-├── popup/               # React 18 SPA popup (520-600px)
-├── types/               # TypeScript definitions
-└── utils/               # Shared utilities
+├── background/              # Service worker
+│   ├── index.ts             # Message router, alarms, lifecycle
+│   ├── engine.ts            # 7-category scoring engine (0-100)
+│   ├── storage.ts           # Chrome storage state management
+│   ├── notifications.ts     # Chrome notification dispatcher
+│   ├── badge.ts             # Toolbar badge (score / alert count)
+│   └── monitors/            # 15 security monitors
+│       ├── sessionHijackMonitor.ts
+│       ├── cookieMonitor.ts
+│       ├── browserMonitor.ts
+│       ├── phishingMonitor.ts
+│       ├── dnsMonitor.ts
+│       ├── certMonitor.ts
+│       ├── networkMonitor.ts
+│       ├── passwordStrengthMonitor.ts
+│       ├── extensionMonitor.ts
+│       ├── headersMonitor.ts
+│       ├── threatIntelMonitor.ts
+│       ├── anomalyMonitor.ts
+│       ├── correlationEngine.ts
+│       ├── accountMonitor.ts
+│       ├── autoResponse.ts
+│       └── timelineDigest.ts
+├── content/                 # Content scripts
+│   ├── index.ts             # Tracker detection, fingerprinting hooks
+│   ├── urlCleaner.ts        # URL tracking parameter stripping
+│   └── permissionMonitor.ts # Sensor API monitoring
+├── popup/                   # React 18 SPA (520-600px)
+│   ├── components/          # Dashboard per category
+│   ├── hooks/               # Security engine bindings
+│   └── utils/               # Password generation, helpers
+├── types/                   # TypeScript definitions
+└── utils/                   # Shared utilities
 ```
 
-## Tech Stack
+## 🧰 Tech Stack
 
-Chrome Extension MV3 · React 18 · TypeScript · Webpack 5
+```
+Extension     Chrome MV3 (Manifest V3, service worker)
+Frontend      React 18, TypeScript, Webpack 5
+Icons         Sharp (PNG generation)
+```
 
-## License
+## 📄 License
 
-MIT
+[MIT](LICENSE)
