@@ -18,10 +18,22 @@ interface CrtshEntry {
   name_value?: string
 }
 
+const certCooldowns = new Map<string, number>()
+const CERT_COOLDOWN_MS = 300000
+
 export async function checkCert(domain: string): Promise<void> {
+  const lastCheck = certCooldowns.get(domain)
+  if (lastCheck && Date.now() - lastCheck < CERT_COOLDOWN_MS) return
+
+  certCooldowns.set(domain, Date.now())
+  if (certCooldowns.size > 100) {
+    const oldest = [...certCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
+    if (oldest) certCooldowns.delete(oldest[0])
+  }
+
   try {
     const resp = await fetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     })
     if (!resp.ok) return
 
@@ -62,7 +74,7 @@ export async function checkCert(domain: string): Promise<void> {
       await recalculateCategoryScore('network')
     }
   } catch (e) {
-    console.error('Cert check failed:', e instanceof Error ? (e as Error).message : String(e))
+    console.error('Cert check failed:', e instanceof Error ? `${e.name}: ${e.message}` : String(e))
   }
 }
 
