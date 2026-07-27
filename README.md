@@ -1,32 +1,28 @@
 # Session Guardian 🔒
 
-A Chrome extension that monitors browser sessions for security threats in real time. Detects session hijacking, cookie theft, fingerprinting, phishing, DNS poisoning, and more — all powered by an AI-driven correlation engine.
+A Chrome extension that monitors browser sessions for security threats in real time. Detects session hijacking, cookie theft, fingerprinting, phishing, DNS inconsistencies, and more.
 
 ## Features
 
-- **Session Hijack Detection** — monitors login forms, credential fields, and session indicators
-- **Cookie Security** — detects auth cookie changes, insecure cookies, and suspicious cookie access
-- **Fingerprinting Protection** — detects canvas, AudioContext, and WebRTC fingerprinting attempts
+- **Session Hijack Detection** — monitors auth cookies on high-value domains (secure/httpOnly flags) and cross-references IP changes
+- **Cookie Security** — detects auth cookie changes, missing secure flags, and insecure sameSite settings
+- **Fingerprinting Detection** — hooks canvas, AudioContext, WebRTC APIs to detect fingerprinting attempts; monitors screen/timezone/UA for changes
 - **Phishing Detection** — checks URLs against OpenPhish and PhishTank feeds
-- **DNS Poisoning Check** — compares DNS resolutions across multiple resolvers
-- **Certificate Monitoring** — validates TLS certificate chains for visited domains
-- **Network Security** — monitors WebRequest patterns, IP changes, and connection anomalies
-- **Password Strength** — analyzes form passwords for weakness
-- **Extension Monitoring** — detects dangerous or excessive permissions in installed extensions
-- **Header Security** — checks for missing security headers (CSP, HSTS, XFO, etc.)
-- **Threat Intel** — checks visited domains against known threat databases
-- **Anomaly Detection** — ML-based behavioral analysis of browsing patterns
-- **Correlation Engine** — cross-correlates events across all security categories
-- **Auto-Response** — optionally kills sessions or rotates credentials on critical alerts
-- **Forensic Snapshots** — captures page state during security incidents
+- **DNS Consistency Check** — compares DNS resolutions across Cloudflare, Google, and doh.li resolvers
+- **Certificate Monitoring** — queries crt.sh for recent certificate transparency logs on high-value domains
+- **Network Security** — monitors IP changes, VPN/proxy/TOR detection via IP geolocation
+- **Extension Risk Scanning** — evaluates installed extensions for dangerous permissions
+- **Security Headers** — checks HTTP responses for HSTS, CSP, XFO, XSS, Referrer-Policy, Permissions-Policy headers
+- **Threat Intel** — checks domains against URLHaus and AlienVault OTX APIs
+- **Anomaly Detection** — heuristic analysis of browsing patterns (unusual hours, tab spikes, new domain bursts)
+- **Correlation Engine** — cross-correlates events across categories using pattern-matching rules
+- **Tracker Detection** — identifies 78+ known tracker domains, tracking pixels, hidden elements, and storage tracking keys
+- **URL Cleaner** — strips 35+ tracking parameters from URLs
+- **Session Auto-Kill** — clears cookies and opens logout URLs for compromised services
+- **Forensic Snapshots** — captures tabs, extensions, cookies, network state, and fingerprint during incidents
+- **Weekly Digest** — timeline of security events with score trends and recommendations
 
 ## Installation
-
-### From Chrome Web Store
-
-*(Coming soon)*
-
-### From Source
 
 ```bash
 git clone https://github.com/simpletarun/session-guardian.git
@@ -35,97 +31,42 @@ npm install
 npm run build
 ```
 
-Then load the extension in Chrome:
-1. Go to `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `dist/` folder
+Load in Chrome: `chrome://extensions` → Developer mode → Load unpacked → select `dist/`
 
 ## Usage
 
-Click the Session Guardian icon in the toolbar to open the popup. The dashboard shows:
+Click the toolbar icon to open the popup. Seven category dashboards:
 
-- **Overview** — overall security score with correlated incident timeline
-- **Network** — IP, DNS, certificate, and WebRequest security
-- **Device** — browser fingerprint status and anomaly scores
-- **Extensions** — risk assessment of installed extensions
-- **Passwords** — password strength analysis and generation
-- **Privacy** — tracker detection, phishing results, and header security
-- **Accounts** — credential monitoring and session management
-
-Each category displays a score (0–100), recent events, and actionable recommendations.
+| Tab | What it shows |
+|-----|--------------|
+| Overview | Overall score, correlated incidents, timeline, weekly digests |
+| Network | IP, VPN status, DNS results, cert checks, threat intel matches |
+| Device | Browser fingerprint stats, anomaly events |
+| Extensions | Installed extension risk levels |
+| Passwords | Password strength indicators |
+| Privacy | Trackers found, phishing results, security headers |
+| Accounts | Tracked accounts, cookie changes, session events |
 
 ## Architecture
 
 ```
-session-guardian/
-├── src/
-│   ├── background/          # Service worker (persistent)
-│   │   ├── index.ts         # Message router, alarms, lifecycle
-│   │   ├── engine.ts        # Scoring engine
-│   │   ├── storage.ts       # State management
-│   │   ├── notifications.ts # Chrome notification dispatcher
-│   │   ├── badge.ts         # Toolbar badge counter
-│   │   └── monitors/
-│   │       ├── sessionHijackMonitor.ts
-│   │       ├── cookieMonitor.ts
-│   │       ├── browserMonitor.ts
-│   │       ├── phishingMonitor.ts
-│   │       ├── dnsMonitor.ts
-│   │       ├── certMonitor.ts
-│   │       ├── networkMonitor.ts
-│   │       ├── passwordStrengthMonitor.ts
-│   │       ├── extensionMonitor.ts
-│   │       ├── headersMonitor.ts
-│   │       ├── threatIntelMonitor.ts
-│   │       ├── anomalyMonitor.ts
-│   │       ├── correlationEngine.ts
-│   │       ├── accountMonitor.ts
-│   │       ├── autoResponse.ts
-│   │       └── timelineDigest.ts
-│   ├── content/             # Content scripts
-│   │   ├── index.ts         # Page scanner, fingerprint detection
-│   │   ├── urlCleaner.ts    # URL sanitization
-│   │   └── permissionMonitor.ts
-│   ├── popup/               # React SPA popup
-│   │   ├── index.tsx
-│   │   ├── App.tsx
-│   │   ├── App.css
-│   │   ├── hooks/
-│   │   ├── components/      # Dashboard components per category
-│   │   └── utils/
-│   ├── types/               # TypeScript type definitions
-│   └── utils/               # Shared utilities
-├── public/                  # Static assets
-│   ├── manifest.json
-│   ├── popup.html
-│   └── icons/
-├── scripts/                 # Build tooling
-└── dist/                    # Built extension (gitignored)
+src/
+├── background/          # Service worker
+│   ├── index.ts         # Message router, alarms, lifecycle
+│   ├── engine.ts        # Scoring engine (7 categories, 0-100)
+│   ├── storage.ts       # Chrome storage state management
+│   ├── notifications.ts # Chrome notification dispatcher
+│   ├── badge.ts         # Toolbar badge (score / alert count)
+│   └── monitors/        # 15 security monitors
+├── content/             # Page scanners (trackers, fingerprinting, URL cleaner)
+├── popup/               # React 18 SPA popup (520-600px)
+├── types/               # TypeScript definitions
+└── utils/               # Shared utilities
 ```
 
-## Development
+## Tech Stack
 
-```bash
-npm run build       # production build
-npm run watch       # watch mode with auto-rebuild
-```
-
-The extension uses:
-- **Chrome Extension MV3** — Manifest V3 service worker architecture
-- **React 18** — Popup UI
-- **Webpack 5** — Bundler
-- **TypeScript** — All source code
-- **Sharp** — Icon generation
-
-## Security
-
-Session Guardian runs entirely in the browser. No data is sent externally except:
-- DNS checks against public resolvers (Cloudflare, Google, Quad9)
-- Phishing lookups against OpenPhish and PhishTank APIs
-- Threat intel checks against public threat feeds
-
-All analysis is local. No telemetry. No accounts.
+Chrome Extension MV3 · React 18 · TypeScript · Webpack 5
 
 ## License
 
