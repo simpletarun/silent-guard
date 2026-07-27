@@ -2,11 +2,11 @@
 
 # 🛡️ SilentGuard
 
-**Real-time browser security monitoring for Chrome**
+**Real-time browser security monitoring for Chromium browsers**
 
 ![Version](https://img.shields.io/badge/version-1.0.1-00A8FF?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-00E676?style=flat-square)
-![Chrome](https://img.shields.io/badge/chrome-MV3-071A2E?style=flat-square)
+![Chrome](https://img.shields.io/badge/chrome-MV3-071A2E?style=flat-square) ![Edge](https://img.shields.io/badge/edge-supported-00E676?style=flat-square) ![Brave](https://img.shields.io/badge/brave-supported-FF6B35?style=flat-square)
 ![React](https://img.shields.io/badge/react-18-00E5FF?style=flat-square)
 ![TypeScript](https://img.shields.io/badge/typescript-5-00A8FF?style=flat-square)
 
@@ -47,10 +47,10 @@ npm run build
 ```
 
 ### Download
-Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, unzip, and load in Chrome.
+Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, unzip, and load in your browser.
 
-### Load in Chrome
-1. Open `chrome://extensions`
+### Load in Chrome / Edge / Brave
+1. Open `chrome://extensions` (Chrome), `edge://extensions` (Edge), or `brave://extensions` (Brave)
 2. Enable **Developer mode** (top right)
 3. Click **Load unpacked**
 4. Select the `dist/` folder
@@ -79,7 +79,8 @@ src/
 │   ├── storage.ts           # Chrome storage state management
 │   ├── notifications.ts     # Chrome notification dispatcher
 │   ├── badge.ts             # Toolbar badge (score / alert count)
-│   └── monitors/            # 15 security monitors
+│   └── monitors/            # 16 security monitors
+│       ├── sessionHijackMonitor.ts
 │       ├── cookieMonitor.ts
 │       ├── browserMonitor.ts
 │       ├── phishingMonitor.ts
@@ -106,6 +107,18 @@ src/
 ├── types/                   # TypeScript definitions
 └── utils/                   # Shared utilities
 ```
+
+## 🌐 Supported Browsers
+
+| Browser | Support |
+|---------|---------|
+| Google Chrome | ✅ Full (MV3) |
+| Microsoft Edge | ✅ Full |
+| Brave | ✅ Full |
+| Opera | ✅ Full |
+| Vivaldi | ✅ Full |
+| Arc | ✅ Full |
+| Mozilla Firefox | ❌ Not supported (MV2 only) |
 
 ## 🧰 Tech Stack
 
