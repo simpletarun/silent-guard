@@ -4,7 +4,7 @@
 
 **Real-time browser security monitoring for Chrome**
 
-![Version](https://img.shields.io/badge/version-1.0.0-00A8FF?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.0.1-00A8FF?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-00E676?style=flat-square)
 ![Chrome](https://img.shields.io/badge/chrome-MV3-071A2E?style=flat-square)
 ![React](https://img.shields.io/badge/react-18-00E5FF?style=flat-square)
@@ -47,7 +47,10 @@ npm install
 npm run build
 ```
 
-Load in Chrome:
+### Download
+Grab the latest build from [Releases](https://github.com/simpletarun/session-guardian/releases) — download the ZIP, unzip, and load in Chrome.
+
+### Load in Chrome
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top right)
 3. Click **Load unpacked**
@@ -111,7 +114,6 @@ src/
 ```
 Extension     Chrome MV3 (Manifest V3, service worker)
 Frontend      React 18, TypeScript, Webpack 5
-Icons         Sharp (PNG generation)
 ```
 
 ## 📄 License
