@@ -55,6 +55,14 @@ Click the SilentGuard icon in the toolbar. Seven dashboards:
 | **Privacy** | Trackers, phishing results, security headers |
 | **Accounts** | Tracked accounts, cookie changes, account activity |
 
+<div align="center">
+
+![SilentGuard Overview Dashboard](assets/overview-screenshot.png)
+
+*Overview dashboard showing per-category security scores*
+
+</div>
+
 ## 🏗️ Architecture
 
 ```
@@ -64,7 +72,7 @@ src/
 │   ├── engine.ts            # 7-category scoring engine (0-100)
 │   ├── storage.ts           # Chrome storage state management
 │   ├── notifications.ts     # Chrome notification dispatcher
-│   ├── badge.ts             # Toolbar badge (score / alert count)
+│   ├── badge.ts              # Toolbar badge (score / alert count)
 │   └── monitors/            # 16 security monitors
 │       ├── sessionHijackMonitor.ts
 │       ├── cookieMonitor.ts
