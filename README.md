@@ -57,10 +57,6 @@ Click the SilentGuard icon in the toolbar. Seven dashboards:
 
 <div align="center">
 
-![SilentGuard Overview Dashboard](overview-screenshot.png)
-
-*Overview dashboard showing per-category security scores*
-
 </div>
 
 ## 🏗️ Architecture
