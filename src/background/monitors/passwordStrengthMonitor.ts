@@ -1,5 +1,5 @@
 import { PasswordStrengthResult, RiskEvent, PasswordFormInfo } from '../../types'
-import { addCategoryEvent, getSecurityState, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSecurityState, getSettings, hasRecentCategoryEvent, updateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 function evaluateFromMetadata(info: PasswordFormInfo): PasswordStrengthResult {
@@ -41,30 +41,44 @@ function evaluateFromMetadata(info: PasswordFormInfo): PasswordStrengthResult {
   }
 }
 
-export async function evaluatePasswordStrength(info: PasswordFormInfo): Promise<PasswordStrengthResult> {
-  const result = evaluateFromMetadata(info)
-  const existing = (await getSecurityState()).passwordStrengths || []
-  const strengths = [result, ...existing].slice(0, 20)
-  await updateSecurityState({ passwordStrengths: strengths })
+// Serialize concurrent PASSWORD_FORM_DETECTED writes — two tabs reporting at
+// once previously read the same array and one result was silently dropped.
+let strengthQueue: Promise<unknown> = Promise.resolve()
 
-  if (result.score < 40) {
-    const severity = result.score < 20 ? 'high' : 'medium'
-    const event: RiskEvent = {
-      id: crypto.randomUUID(),
-      type: 'password_strength',
-      category: 'passwords',
-      severity,
-      title: `Weak password form on ${result.domain}`,
-      description: result.suggestions.join('; ') || `Form scored ${result.score}/100`,
-      source: result.domain,
-      timestamp: Date.now(),
-      acknowledged: false,
+export function evaluatePasswordStrength(info: PasswordFormInfo): Promise<PasswordStrengthResult> {
+  const run = async (): Promise<PasswordStrengthResult> => {
+    const settings = await getSettings()
+    if (!settings.monitorPasswordStrength) return evaluateFromMetadata(info)
+    const result = evaluateFromMetadata(info)
+    const existing = (await getSecurityState()).passwordStrengths || []
+    const strengths = [result, ...existing].slice(0, 20)
+    await updateSecurityState({ passwordStrengths: strengths })
+
+    if (result.score < 40) {
+      // Re-visited login pages re-fire this on every load — dedupe.
+      const dup = await hasRecentCategoryEvent('passwords', e => e.type === 'password_strength' && e.source === result.domain, 60000)
+      if (!dup) {
+        const severity = result.score < 20 ? 'high' : 'medium'
+        const event: RiskEvent = {
+          id: crypto.randomUUID(),
+          type: 'password_strength',
+          category: 'passwords',
+          severity,
+          title: `Weak password form on ${result.domain}`,
+          description: result.suggestions.join('; ') || `Form scored ${result.score}/100`,
+          source: result.domain,
+          timestamp: Date.now(),
+          acknowledged: false,
+        }
+        await addCategoryEvent('passwords', event)
+      }
     }
-    await addCategoryEvent('passwords', event)
-  }
-  await recalculateCategoryScore('passwords')
+    await recalculateCategoryScore('passwords')
 
-  return result
+    return result
+  }
+  strengthQueue = strengthQueue.then(run, run)
+  return strengthQueue as Promise<PasswordStrengthResult>
 }
 
 export function startPasswordStrengthMonitor(): void {

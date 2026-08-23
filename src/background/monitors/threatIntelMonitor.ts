@@ -1,15 +1,28 @@
+import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, ThreatIntelMatch } from '../../types'
-import { addCategoryEvent, getSecurityState, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSecurityState, getSettings, updateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
-const checkedDomains = new Set<string>()
+// Domain → last-checked timestamp. A URLHaus listing can appear hours after
+// the first visit, so recheck after a day instead of caching forever.
+const checkedDomains = new Map<string, number>()
+
+export function resetAuditCaches(): void {
+  checkedDomains.clear()
+}
 const CHECKED_DOMAINS_MAX = 5000
+const RECHECK_AFTER_MS = 24 * 60 * 60 * 1000
+
+function shouldCheck(domain: string): boolean {
+  const last = checkedDomains.get(domain)
+  return last === undefined || Date.now() - last > RECHECK_AFTER_MS
+}
 
 function pruneCheckedDomains(): void {
   if (checkedDomains.size > CHECKED_DOMAINS_MAX) {
-    const arr = Array.from(checkedDomains)
+    const arr = Array.from(checkedDomains.entries())
     checkedDomains.clear()
-    for (const d of arr.slice(arr.length - CHECKED_DOMAINS_MAX / 2)) checkedDomains.add(d)
+    for (const [d, t] of arr.slice(arr.length - CHECKED_DOMAINS_MAX / 2)) checkedDomains.set(d, t)
   }
 }
 
@@ -26,8 +39,9 @@ async function checkTabs(): Promise<void> {
   for (const tab of tabs) {
     if (!tab.url) continue
     const domain = extractDomain(tab.url)
-    if (domain && !checkedDomains.has(domain)) {
-      checkedDomains.add(domain)
+    if (domain && shouldCheck(domain)) {
+      checkedDomains.set(domain, Date.now())
+      pruneCheckedDomains()
       checkIntelDomain(domain)
     }
   }
@@ -36,7 +50,7 @@ async function checkTabs(): Promise<void> {
 async function fetchWithRetry(url: string, options: RequestInit, retries = 3): Promise<Response | null> {
   for (let i = 0; i < retries; i++) {
     try {
-      const resp = await fetch(url, { ...options, signal: AbortSignal.timeout(10000) })
+      const resp = await fetch(url, { ...options, signal: timeoutSignal(10000) })
       if (resp.status === 429) {
         await new Promise(r => setTimeout(r, (i + 1) * 2000))
         continue
@@ -52,37 +66,22 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
 
 export function threatTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo): void {
   if (!changeInfo.url) return
-  const domain = extractDomain(changeInfo.url)
-  if (domain && !checkedDomains.has(domain)) {
-    checkedDomains.add(domain)
-    pruneCheckedDomains()
-    checkIntelDomain(domain)
-  }
+  const url = changeInfo.url
+  getSettings().then(s => {
+    if (!s.monitorThreatIntel) return
+    const domain = extractDomain(url)
+    if (domain && shouldCheck(domain)) {
+      checkedDomains.set(domain, Date.now())
+      pruneCheckedDomains()
+      checkIntelDomain(domain)
+    }
+  }).catch(() => {})
 }
 
 export function startThreatIntelMonitor(): void {
-  checkTabs()
-}
-
-export async function checkIntelIp(ip: string): Promise<void> {
-  try {
-    const resp = await fetchWithRetry(`https://otx.alienvault.com/api/v1/indicators/IPv4/${ip}/general`, {})
-    if (!resp || !resp.ok) return
-    const data = await resp.json()
-    if (data?.pulse_info?.count > 0 && data?.pulse_info?.pulses?.length > 0) {
-      const match: ThreatIntelMatch = {
-        ioc: ip,
-        type: 'ip',
-        feed: 'AlienVault OTX',
-        description: `IP found in ${data.pulse_info.count} threat pulse(s)`,
-        severity: data.pulse_info.count > 5 ? 'high' : 'medium',
-        matchedAt: Date.now(),
-      }
-      await storeThreatMatch(match)
-    }
-  } catch (e) {
-    console.error('Threat intel IP check failed:', e)
-  }
+  getSettings().then(s => {
+    if (s.monitorThreatIntel) checkTabs()
+  }).catch(() => {})
 }
 
 export async function checkIntelDomain(domain: string): Promise<void> {
@@ -110,24 +109,35 @@ export async function checkIntelDomain(domain: string): Promise<void> {
   }
 }
 
-async function storeThreatMatch(match: ThreatIntelMatch): Promise<void> {
-  const existing = (await getSecurityState()).threatIntelMatches || []
-  const matches = [match, ...existing].slice(0, 100)
-  await updateSecurityState({ threatIntelMatches: matches })
+// Serialize concurrent match writes — two domains resolving simultaneously
+// used to read the same matches array and drop one.
+let matchQueue: Promise<unknown> = Promise.resolve()
 
-  const severity = match.severity as string
-  const eventSeverity = severity === 'critical' ? 'critical' : severity === 'high' ? 'high' : 'medium'
-  const event: RiskEvent = {
-    id: crypto.randomUUID(),
-    type: 'threat_intel_match',
-    category: 'network',
-    severity: eventSeverity as 'low' | 'medium' | 'high' | 'critical',
-    title: `Threat intel match: ${match.ioc}`,
-    description: match.description,
-    source: match.feed,
-    timestamp: Date.now(),
-    acknowledged: false,
-  }
-  await addCategoryEvent('network', event)
-  await recalculateCategoryScore('network')
+function storeThreatMatch(match: ThreatIntelMatch): Promise<void> {
+  matchQueue = matchQueue.then(async () => {
+    const existing = (await getSecurityState()).threatIntelMatches || []
+    // Re-checks run daily by design — a domain that stays listed must not
+    // re-add its row or re-alert every day.
+    const prior = existing.find(m => m.ioc === match.ioc && m.feed === match.feed)
+    if (prior) return
+    const matches = [match, ...existing].slice(0, 100)
+    await updateSecurityState({ threatIntelMatches: matches })
+
+    const severity = match.severity as string
+    const eventSeverity = severity === 'critical' ? 'critical' : severity === 'high' ? 'high' : 'medium'
+    const event: RiskEvent = {
+      id: crypto.randomUUID(),
+      type: 'threat_intel_match',
+      category: 'network',
+      severity: eventSeverity as 'low' | 'medium' | 'high' | 'critical',
+      title: `Threat intel match: ${match.ioc}`,
+      description: match.description,
+      source: match.feed,
+      timestamp: Date.now(),
+      acknowledged: false,
+    }
+    await addCategoryEvent('network', event)
+    await recalculateCategoryScore('network')
+  }).catch(() => {})
+  return matchQueue as Promise<void>
 }

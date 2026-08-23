@@ -1,14 +1,51 @@
+import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, NetworkInfo } from '../../types'
 import { addCategoryEvent, updateSecurityState, getSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
-const VPN_KEYWORDS = ['vpn', 'proxy', 'datacenter', 'hosting', 'cloud', 'aws', 'gcp', 'azure', 'digitalocean', 'hetzner', 'ovh', 'linode']
+export interface ConnectionSignals {
+  vpn: boolean
+  proxy: boolean
+  tor: boolean
+  hosting: boolean
+}
+
+const VPN_KEYWORDS = [
+  'vpn', 'proxy', 'datacenter', 'hosting', 'cloud', 'aws', 'gcp', 'azure',
+  'digitalocean', 'hetzner', 'ovh', 'linode', 'nordvpn', 'expressvpn',
+  'mullvad', 'datacamp', 'surfshark', 'cyberghost', 'purevpn',
+  'private internet access', 'tor exit', 'wireguard', 'ipredator',
+]
 const TOR_ASNS = [9009, 50472, 12876]
+
+// Pure verdict logic so detection is testable without the network.
+export function classifyConnection(org: string | undefined, isp: string | undefined, s: ConnectionSignals, extraText = ''): { isVpn: boolean; isProxy: boolean; isTor: boolean } {
+  const searchText = ((org || '') + ' ' + (isp || '') + ' ' + extraText).toLowerCase()
+  const isProxy = s.proxy
+  let isVpn = s.vpn || s.hosting
+  let isTor = s.tor
+  // No flags — fall back to provider keywords in the ISP/org/ASN text.
+  if (!s.proxy && !s.hosting && !s.vpn && !s.tor) {
+    // Word-boundary matching: unanchored substrings flagged "Toronto",
+    // "Motorola" and ordinary org names containing "cloud"/"hosting".
+    const wordHit = (k: string) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(searchText)
+    isVpn = VPN_KEYWORDS.some(wordHit)
+    isTor = wordHit('tor') || wordHit('tor exit')
+    if (!isTor) {
+      const asnMatch = /AS(\d+)/i.exec(searchText)
+      if (asnMatch) isTor = TOR_ASNS.includes(parseInt(asnMatch[1], 10))
+    }
+  }
+  return { isVpn, isProxy, isTor }
+}
 
 let failureCount = 0
 let pendingBackoff: ReturnType<typeof setTimeout> | null = null
+// Startup + alarm can both fire checkPublicIp — two concurrent runs double
+// the ip_change event and race the ipHistory read-modify-write.
+let ipCheckInFlight = false
 
-export function cancelPendingIpCheck(): void {
+function cancelPendingIpCheck(): void {
   if (pendingBackoff !== null) {
     clearTimeout(pendingBackoff)
     pendingBackoff = null
@@ -17,9 +54,9 @@ export function cancelPendingIpCheck(): void {
 
 async function fetchIp(): Promise<string> {
   const services = [
-    async () => { const r = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(8000) }); const d = await r.json(); return d.ip },
-    async () => { const r = await fetch('https://api.ip.sb/geoip', { signal: AbortSignal.timeout(8000) }); const d = await r.json(); return d.ip },
-    async () => { const r = await fetch('https://icanhazip.com', { signal: AbortSignal.timeout(8000) }); return (await r.text()).trim() },
+    async () => { const r = await fetch('https://api.ipify.org?format=json', { signal: timeoutSignal(8000) }); const d = await r.json(); return d.ip },
+    async () => { const r = await fetch('https://api.ip.sb/geoip', { signal: timeoutSignal(8000) }); const d = await r.json(); return d.ip },
+    async () => { const r = await fetch('https://icanhazip.com', { signal: timeoutSignal(8000) }); return (await r.text()).trim() },
   ]
   for (const svc of services) {
     try { const ip = await svc(); if (ip) return ip } catch { }
@@ -28,6 +65,8 @@ async function fetchIp(): Promise<string> {
 }
 
 export async function checkPublicIp(): Promise<void> {
+  if (ipCheckInFlight) return
+  ipCheckInFlight = true
   try {
     const ip = await fetchIp()
     if (!ip) {
@@ -50,60 +89,65 @@ export async function checkPublicIp(): Promise<void> {
     let country: string | undefined
     let city: string | undefined
     let org: string | undefined
+    let asnText = ''
     let isVpn = false
     let isProxy = false
     let isTor = false
+    const signals: ConnectionSignals = { vpn: false, proxy: false, tor: false, hosting: false }
 
+    // VPN/proxy/TOR detection runs unconditionally.
+    // ip-api.com free tier is the ONLY source with real proxy/hosting flags.
+    // It is HTTP-only (HTTPS returns 403), fine for a service-worker fetch.
     try {
-      const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: AbortSignal.timeout(8000) })
-      if (geoResp.ok) {
-        const geo = await geoResp.json()
-        isp = geo.org || geo.isp
-        country = geo.country_name
-        city = geo.city
-        org = geo.org
+      const fb2 = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,city,isp,org,as,asname,proxy,hosting,query`, { signal: timeoutSignal(8000) })
+      if (fb2.ok) {
+        const geo = await fb2.json()
+        if (geo.status === 'success') {
+          org = geo.org || geo.isp
+          isp = geo.isp
+          asnText = `${geo.as || ''} ${geo.asname || ''}`
+          signals.proxy = geo.proxy === true
+          signals.hosting = geo.hosting === true
+          country = country ?? geo.country
+          city = city ?? geo.city
+        }
       }
-    } catch {
+    } catch {}
+
+    if (!org) {
       try {
-        const fallbackResp = await fetch(`https://ipwho.is/${ip}`, { signal: AbortSignal.timeout(8000) })
-        if (fallbackResp.ok) {
-          const geo = await fallbackResp.json()
+        const whoResp = await fetch(`https://ipwho.is/${ip}`, { signal: timeoutSignal(8000) })
+        if (whoResp.ok) {
+          const geo = await whoResp.json()
           if (geo.success) {
-            isp = geo.connection?.isp || geo.org
-            country = geo.country
-            city = geo.city
+            isp = geo.connection?.isp
             org = geo.connection?.org
+            asnText = `${geo.connection?.asn || ''}`
+            country = country ?? geo.country
+            city = city ?? geo.city
           }
         }
       } catch {}
     }
 
-    if (!isp && !city && !country) {
+    if (!org) {
       try {
-        const fb2 = await fetch(`https://ip-api.com/json/${ip}`, { signal: AbortSignal.timeout(8000) })
-        if (fb2.ok) {
-          const geo = await fb2.json()
-          if (geo.status === 'success') {
-            isp = geo.isp || geo.org
-            country = geo.country
-            city = geo.city
-            org = geo.org
-          }
+        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(8000) })
+        if (geoResp.ok) {
+          const geo = await geoResp.json()
+          isp = geo.org || geo.isp
+          org = geo.org
+          signals.proxy = geo.proxy === true
+          country = country ?? geo.country_name
+          city = city ?? geo.city
         }
       } catch {}
     }
 
-    if (org || isp) {
-      const searchText = ((org || '') + ' ' + (isp || '')).toLowerCase()
-      isVpn = VPN_KEYWORDS.some(k => searchText.includes(k))
-      isTor = searchText.includes('tor')
-      if (!isTor && org) {
-        try {
-          const asnMatch = /AS(\d+)/i.exec(org)
-          if (asnMatch) isTor = TOR_ASNS.includes(parseInt(asnMatch[1], 10))
-        } catch {}
-      }
-    }
+    const verdict = classifyConnection(org, isp, signals, asnText)
+    isVpn = verdict.isVpn
+    isProxy = verdict.isProxy
+    isTor = verdict.isTor
 
     if (prev && prev.publicIp !== ip) {
       const prevInfo = prev.country && country && prev.country !== country ? ` (country: ${prev.country} \u2192 ${country})` : ''
@@ -121,7 +165,13 @@ export async function checkPublicIp(): Promise<void> {
       await addCategoryEvent('network', event)
     }
 
-    const recentIps = (prev?.ipHistory || []).concat({ ip, timestamp: Date.now() }).filter(h => Date.now() - h.timestamp < 86400000 * 30)
+    // Record transitions only — appending every check filled the history
+    // with same-IP rows (the ipCheck alarm runs every 5 minutes), so the
+    // popup showed the same address twice and real changes fell out of
+    // the 10-entry cap.
+    const recentIps = (prev?.ipHistory || []).filter(h => Date.now() - h.timestamp < 86400000 * 30)
+    const lastEntry = recentIps[recentIps.length - 1]
+    if (!lastEntry || lastEntry.ip !== ip) recentIps.push({ ip, timestamp: Date.now() })
     if (recentIps.length > 10) recentIps.shift()
 
     const network: NetworkInfo = {
@@ -132,7 +182,6 @@ export async function checkPublicIp(): Promise<void> {
       isVpn,
       isProxy,
       isTor,
-      isDoHEnabled: false,
       lastChecked: Date.now(),
       ipHistory: recentIps,
     }
@@ -141,6 +190,8 @@ export async function checkPublicIp(): Promise<void> {
     await recalculateCategoryScore('network')
   } catch (e) {
     console.error('IP check failed:', e)
+  } finally {
+    ipCheckInFlight = false
   }
 }
 

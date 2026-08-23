@@ -1,25 +1,35 @@
 import React from 'react'
-import { useToast, default as ToastBar } from '../shared/Toast'
+import { showToast } from '../shared/Toast'
 
 import { AMBIGUOUS, LOWERS, UPPERS, DIGITS, SYMBOLS, CONSONANTS, VOWELS, WORDS, UNIQUE_WORD_COUNT } from '../../utils/passwordConstants'
+
+// Crypto-strength RNG — Math.random() is not acceptable for passwords.
+// Rejection sampling: % alone biases small indices (2^32 is not divisible
+// by 26/33/…), so early chars would be measurably favored.
+function randIndex(maxExclusive: number): number {
+  const buf = new Uint32Array(1)
+  const limit = Math.floor(0x100000000 / maxExclusive) * maxExclusive
+  do { crypto.getRandomValues(buf) } while (buf[0] >= limit)
+  return buf[0] % maxExclusive
+}
 
 function shuffle(s: string): string {
   const a = s.split('')
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]
+    const j = randIndex(i + 1); [a[i], a[j]] = [a[j], a[i]]
   }
   return a.join('')
 }
 
 function pickFrom<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)]
+  return arr[randIndex(arr.length)]
 }
 function pickChar(s: string): string {
-  return s[Math.floor(Math.random() * s.length)]
+  return s[randIndex(s.length)]
 }
 
 function randInt(min: number, max: number): number {
-  return min + Math.floor(Math.random() * (max - min + 1))
+  return min + randIndex(max - min + 1)
 }
 
 function generateRandom(length: number, useUpper: boolean, useDigits: boolean, useSymbols: boolean, excludeAmbiguous: boolean, minUpper: number, minDigits: number, minSymbols: number): string {
@@ -29,10 +39,21 @@ function generateRandom(length: number, useUpper: boolean, useDigits: boolean, u
       lowers = lowers.replace(c, ''); uppers = uppers.replace(c, ''); digits = digits.replace(c, '')
     }
   }
+  // Minimums may exceed length (e.g. length 4 with min 2/2/2) — reduce the
+  // largest minimums until they fit, so the password stays exactly `length`.
+  const mins = [
+    { value: minUpper, enabled: useUpper },
+    { value: minDigits, enabled: useDigits },
+    { value: minSymbols, enabled: useSymbols },
+  ].filter(m => m.enabled)
+  while (mins.reduce((s, m) => s + m.value, 0) > length) {
+    const largest = mins.reduce((a, b) => (a.value >= b.value ? a : b))
+    largest.value = Math.max(0, largest.value - 1)
+  }
   const chars: string[] = []
-  for (let i = 0; i < minUpper && useUpper; i++) chars.push(pickChar(uppers))
-  for (let i = 0; i < minDigits && useDigits; i++) chars.push(pickChar(digits))
-  for (let i = 0; i < minSymbols && useSymbols; i++) chars.push(pickChar(symbols))
+  if (mins[0]?.enabled) for (let i = 0; i < mins[0].value; i++) chars.push(pickChar(uppers))
+  if (mins[1]?.enabled) for (let i = 0; i < mins[1].value; i++) chars.push(pickChar(digits))
+  if (mins[2]?.enabled) for (let i = 0; i < mins[2].value; i++) chars.push(pickChar(symbols))
   let pool = lowers
   if (useUpper) pool += uppers
   if (useDigits) pool += digits
@@ -55,9 +76,9 @@ function generatePassphrase(wordCount: number, separator: string, capitalize: bo
 function generatePronounceable(syllables: number): string {
   let result = ''
   for (let i = 0; i < syllables; i++) {
-    if (i > 0 && Math.random() < 0.3) result += pickChar(CONSONANTS)
+    if (i > 0 && randInt(0, 9) < 3) result += pickChar(CONSONANTS)
     result += pickChar(CONSONANTS) + pickChar(VOWELS)
-    if (Math.random() < 0.6) result += pickChar(CONSONANTS)
+    if (randInt(0, 9) < 6) result += pickChar(CONSONANTS)
   }
   return result
 }
@@ -86,8 +107,6 @@ function strengthFromEntropy(e: number): { label: string; color: string } {
 type GenMode = 'random' | 'passphrase' | 'pronounceable'
 
 export default function PasswordDashboard({}: Record<string, never>) {
-  const { toasts, show } = useToast()
-
   const [mode, setMode] = React.useState<GenMode>('random')
 
   const [pwLength, setPwLength] = React.useState(20)
@@ -139,14 +158,14 @@ export default function PasswordDashboard({}: Record<string, never>) {
     try {
       await navigator.clipboard.writeText(pw)
       setCopiedIndex(idx)
-      show('Copied to clipboard', 'success')
+      showToast('Copied to clipboard', 'success')
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
       copiedTimerRef.current = setTimeout(() => {
         copiedTimerRef.current = null
         setCopiedIndex(-1)
       }, 2000)
     } catch {
-      show('Failed to copy', 'error')
+      showToast('Failed to copy', 'error')
     }
   }
 
@@ -154,7 +173,7 @@ export default function PasswordDashboard({}: Record<string, never>) {
     if (passwords.length > 0) handleGenerate()
   }
 
-  const renderEntropy = (pw: string, idx: number) => {
+  const renderEntropy = (pw: string, _idx: number) => {
     const ent = mode === 'passphrase' ? estimatePassphraseEntropy(wordCount) : estimateEntropy(pw)
     const st = strengthFromEntropy(ent)
     return { ent, st }
@@ -162,7 +181,6 @@ export default function PasswordDashboard({}: Record<string, never>) {
 
   return (
     <div className="cat-dashboard">
-      <ToastBar toasts={toasts} />
       <div className="card">
         <div className="card-title">
           <span className="pwgen-title-icon">🔑</span>

@@ -1,90 +1,22 @@
 import { initUrlCleaner, stopUrlCleaner } from './urlCleaner'
-import { initPermissionMonitor } from './permissionMonitor'
-import { collectFingerprint } from '../utils/fingerprint'
+import { detectPolicyLinks, handleFindPolicyLinks, initPolicyDetection, stopPolicyDetection, probePolicyPaths, fetchPolicyUrlForProbe } from './policyDetection'
+import { TRACKER_DOMAINS_LIST } from '../utils/trackerDomains'
+import { classifyAuthFromForm, classifyPasswordInput, getFormSignals, findLogoutIndicator, USERNAME_INPUT_SELECTORS } from '../utils/authRole'
 
-let fpInterval: ReturnType<typeof setInterval> | null = null
-let fingerprintingCount = 0
+let authScanInterval: ReturnType<typeof setInterval> | null = null
 let canvasAttempts = 0
 let audioAttempts = 0
-let beaconCalls = 0
 let webRTCDetected = false
 
-const TRACKER_DOMAINS_LIST = [
-  'google-analytics.com', 'googletagmanager.com', 'doubleclick.net',
-  'facebook.net', 'facebook.com', 'connect.facebook.net',
-  'scorecardresearch.com', 'adsrvr.org', 'adnxs.com',
-  'rubiconproject.com', 'criteo.com', 'hotjar.com',
-  'mixpanel.com', 'amplitude.com', 'segment.io',
-  'optimizely.com', 'newrelic.com', 'datadoghq.com',
-  'cdn.ampproject.org', 'platform.twitter.com',
-  'bat.bing.com', 'pixel.quantserve.com',
-  'adservice.google.com', 'pagead2.googlesyndication.com',
-  'analytics.twitter.com', 'ads.linkedin.com',
-  'snap.licdn.com', 'static.ads-twitter.com',
-  'www.google-analytics.com', 'ssl.google-analytics.com',
-  'stats.g.doubleclick.net', 'www.googletagmanager.com',
-  'cdn.segment.com', 'cdn.mxpnl.com',
-  'dpm.demdex.net', 'ads.yahoo.com',
-  'advertising.yahoo.com', 'analytics.yahoo.com',
-  'cdp.cloud.unity3d.com', 'www.googleadservices.com',
-  'googleads.g.doubleclick.net', 'tpc.googlesyndication.com',
-  'cm.g.doubleclick.net', 'partner.googleadservices.com',
-  'px.ads.linkedin.com', 'www.linkedin.com/px',
-  'snapchat.com', 'tr.snapchat.com',
-  'ads.tiktok.com', 'analytics.tiktok.com',
-  'pinterest.com', 'ct.pinterest.com',
-  'redditstatic.com', 'alb.reddit.com',
-  'outbrain.com', 'amplify.outbrain.com',
-  'taboola.com', 'trc.taboola.com',
-  'media.net', 'adsrvmedia.net',
-  'casalemedia.com', 'bidswitch.net',
-  'openx.net', 'pubmatic.com',
-  'sharethrough.com', 'indexww.com',
-  'sovrn.com', 'agkn.com',
-  'contextweb.com', 'mookie1.com',
-  'turn.com', 'mathtag.com',
-  'bluekai.com', 'exelator.com',
-  'krxd.net', 'rlcdn.com',
-  'demandbase.com', '6sc.co',
-  'sumo.com', 'addthis.com',
-  'disqus.com', 'youtube.com/embed',
-  'vimeo.com', 'player.vimeo.com',
-  'wistia.net', 'fast.wistia.net',
-  'crazyegg.com', 'mouseflow.com',
-  'fullstory.com', 'luckyorange.com',
-  'sessioncam.com', 'smartlook.com',
-  'clarity.ms', 'www.clarity.ms',
-  'heap.com', 'd2xxq4l49t34gd.cloudfront.net',
-  'cdn.heapanalytics.com', 'posthog.com',
-  'piwik.org', 'matomo.org',
-  'plausible.io', 'cdn.plausible.io',
-  'simpleanalyticscdn.com', 'queue.simpleanalyticscdn.com',
-  'fomo.com', 'pushcrew.com',
-  'onesignal.com', 'cdn.onesignal.com',
-  'intercom.io', 'js.intercomcdn.com',
-  'drift.com', 'cdn.drift.com',
-  'hubspot.com', 'js.hs-scripts.com',
-  'salesforce.com', 'sfdc-studio.us',
-  'zendesk.com', 'assets.zendesk.com',
-  'freshchat.com', 'connect.freshchat.com',
-  'tidio.co', 'code.tidio.co',
-  'crisp.chat', 'client.crisp.chat',
-  'tawk.to', 'embed.tawk.to',
-  'livechatinc.com', 'cdn.livechatinc.com',
-  'olark.com', 'static.olark.com',
-  'pusher.com', 'js.pusher.com',
-  'socket.io', 'cdn.socket.io',
-  'firebaseio.com', 'auth.firebase.com',
-  'algolia.net', 'cdn.algolia.net',
-  'optimize.google.com', 'www.googleoptimize.com',
-]
-
 const INLINE_TRACKING_PATTERNS = [
-  /google-analytics/gi, /gtag\s*\(/gi, /ga\s*\(/gi,
+  /google-analytics/gi, /gtag\s*\(/gi,
+  // \b + call-shape so "figma("/"yoga("-style text and the words
+  // "drift"/"clarity"/"crisp" in prose don't count as tracker snippets.
+  /\bga\s*\(/gi,
   /fbq\s*\(/gi, /facebook.*pixel/gi, /connect\.facebook/gi,
   /doubleclick/gi, /gtm\.js/gi, /googletagmanager/gi,
   /piwik\s*\(/gi, /_paq\.push/gi, /matomo/gi,
-  /hotjar/gi, /clarity/gi, /msclarity/gi,
+  /hotjar/gi, /\bmsclarity|\bclarity\s*[.(]/gi,
   /amplitude/gi, /mixpanel/gi, /segment\.io/gi,
   /analytics\.tiktok/gi, /pinterest.*pixel/gi,
   /linkedin.*insight/gi, /_linkedin/gi,
@@ -94,27 +26,11 @@ const INLINE_TRACKING_PATTERNS = [
   /outbrain/gi, /taboola/gi,
   /fullstory/gi, /crazyegg/gi,
   /mouseflow/gi, /luckyorange/gi,
-  /intercom/gi, /drift/gi,
+  /intercom/gi, /\bdrift\s*[.(]|\bdrift\.chat/gi,
   /hubspot/gi, /salesforce/gi,
   /zendesk/gi, /freshchat/gi,
-  /tidio/gi, /crisp/gi,
+  /tidio/gi, /\bcrisp\s*[.(]|crisp\.chat/gi,
   /tawk/gi, /olark/gi,
-]
-
-const STORAGE_TRACKER_KEYS = [
-  '_ga', '_gid', '_gat', '_fbp', '_fbc',
-  'ajs_user_id', 'ajs_anonymous_id', 'amplitude_id',
-  'mp_name_tag', 'mp_identity', 'hubspotutk',
-  '__hstc', '__hssc', '__hsfp',
-  'intercom_id', 'intercom_device_id',
-  'drift_aid', 'drift_session',
-  'gclid', 'gclsrc', 'dclid',
-  'fbclid', 'ttclid', 'li_fat_id',
-  'optimizely', 'optimizely_uuid',
-  '_uetsid', '_uetvid', 'pin_audiolib',
-  '_pin_unauth', '_pinterest_ct_ua',
-  'mako_browser', 'visitor_id',
-  '_gaexp', '_gaexperiment',
 ]
 
 function extractDomain(url: string): string {
@@ -134,9 +50,6 @@ function isTrackerDomain(domain: string): boolean {
 
 function scanForTrackers() {
   const trackers: { domain: string; source: string; type: any; category: any; details?: string }[] = []
-  let trackingPixels = false
-  let hiddenIframes = false
-  let hiddenElementsFound = 0
 
   document.querySelectorAll<HTMLScriptElement>('script[src]').forEach(script => {
     const src = script.src
@@ -149,14 +62,16 @@ function scanForTrackers() {
   document.querySelectorAll<HTMLScriptElement>('script:not([src])').forEach(script => {
     const text = script.textContent || ''
     for (const pattern of INLINE_TRACKING_PATTERNS) {
-      if (pattern.test(text)) {
-        const match = text.match(pattern)
+      // pattern.test() is stateful with /g — use match() instead, which
+      // never advances lastIndex and works across multiple scripts.
+      const m = text.match(pattern)
+      if (m) {
         trackers.push({
           domain: window.location.hostname,
-          source: match ? match[0].substring(0, 40) : 'inline tracking script',
+          source: m[0].substring(0, 40),
           type: 'inline',
           category: categorizeTracker(window.location.hostname),
-          details: match ? match[0].substring(0, 60) : 'tracking code detected',
+          details: m[0].substring(0, 60),
         })
         break
       }
@@ -164,48 +79,37 @@ function scanForTrackers() {
   })
 
   document.querySelectorAll<HTMLImageElement>('img').forEach(img => {
-    if (img.width <= 1 && img.height <= 1 && img.src) {
+    // A real tracking pixel is a 1×1 image. complete+naturalWidth 0 is also
+    // true for FAILED loads — counting those fabricated pixel hits.
+    if (img.naturalWidth === 1 && img.naturalHeight === 1 && img.src) {
       const domain = extractDomain(img.src)
       trackers.push({ domain, source: img.src, type: 'pixel', category: 'tracking', details: 'Tracking pixel' })
-      trackingPixels = true
     }
   })
 
   document.querySelectorAll<HTMLIFrameElement>('iframe').forEach(iframe => {
     const src = iframe.src
-    if (src) {
-      const domain = extractDomain(src)
-      if (isTrackerDomain(domain)) {
-        trackers.push({ domain, source: src, type: 'iframe', category: categorizeTracker(domain) })
-        hiddenIframes = true
-      }
-      const iframeRect = iframe.getBoundingClientRect()
-      if (iframeRect.width <= 1 || iframeRect.height <= 1 || iframe.style.display === 'none' || iframe.style.visibility === 'hidden') {
-        const domain = extractDomain(src)
-        trackers.push({ domain, source: src, type: 'hidden', category: 'tracking', details: 'Hidden iframe' })
-        hiddenIframes = true
-        hiddenElementsFound++
-      }
+    if (!src) return
+    const domain = extractDomain(src)
+    const rect = iframe.getBoundingClientRect()
+    const isHidden = rect.width <= 1 || rect.height <= 1 ||
+      iframe.style.display === 'none' || iframe.style.visibility === 'hidden'
+    // One entry per tracker iframe element — a hidden tracker iframe must
+    // not count twice ('iframe' AND 'hidden').
+    if (isTrackerDomain(domain)) {
+      trackers.push({
+        domain, source: src, type: 'iframe', category: categorizeTracker(domain),
+        details: isHidden ? 'Hidden iframe' : undefined,
+      })
     }
   })
-
-  const HIDDEN_TAGS = new Set(['A', 'IMG', 'DIV', 'SPAN', 'INPUT', 'BUTTON', 'CANVAS', 'OBJECT', 'EMBED', 'P', 'LI', 'TD'])
-  const MAX_HIDDEN_SCAN = 3000
-  let hiddenScanCount = 0
-  for (const el of document.querySelectorAll('*')) {
-    if (++hiddenScanCount > MAX_HIDDEN_SCAN) break
-    const tag = (el as HTMLElement).tagName
-    if (tag === 'IFRAME' || tag === 'SCRIPT' || !HIDDEN_TAGS.has(tag)) continue
-    const h = el as HTMLElement
-    if (h.offsetParent === null || h.offsetWidth <= 1 || h.offsetHeight <= 1) {
-      hiddenElementsFound++
-    }
-  }
 
   const entries = performance.getEntriesByType('resource')
   for (const entry of entries) {
     const domain = extractDomain((entry as PerformanceResourceTiming).name)
-    if (isTrackerDomain(domain) && !trackers.some(t => t.source === (entry as PerformanceResourceTiming).name)) {
+    // One entry per tracker domain — five analytics pings must not count
+    // as five trackers.
+    if (isTrackerDomain(domain) && !trackers.some(t => t.domain === domain)) {
       trackers.push({
         domain,
         source: (entry as PerformanceResourceTiming).name,
@@ -218,70 +122,40 @@ function scanForTrackers() {
 
   const totalCookies = document.cookie ? document.cookie.split(';').length : 0
 
-  let localStorageItems = 0
-  try {
-    if (window.localStorage) localStorageItems = window.localStorage.length
-  } catch {}
+  // Same tracker seen several ways (script tag + iframe + resource) counts
+  // once per type — duplicates must not inflate totals or scores.
+  const seen = new Set<string>()
+  const dedupedTrackers = trackers.filter(t => {
+    const k = `${t.domain}|${t.type}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
 
-  let sessionStorageItems = 0
-  try {
-    if (window.sessionStorage) sessionStorageItems = window.sessionStorage.length
-  } catch {}
-
-  return {
-    trackers,
-    trackingPixels,
-    hiddenIframes,
-    hiddenElementsFound,
-    totalCookies,
-    localStorageItems,
-    sessionStorageItems,
-  }
+  return { trackers: dedupedTrackers, totalCookies }
 }
 
 function scanThirdPartyRequests(): number {
   try {
     const entries = performance.getEntriesByType('resource')
-    const currentDomain = window.location.hostname
+    // Subdomains of the current site (cdn.example.com on example.com) are
+    // first-party; data:/blob:/about: URLs have no real host.
+    const currentHost = window.location.hostname.replace(/^www\./, '')
     let count = 0
     for (const entry of entries) {
       try {
         const url = new URL((entry as PerformanceResourceTiming).name)
-        if (url.hostname !== currentDomain) count++
+        if (!url.protocol.startsWith('http')) continue
+        const host = url.hostname.replace(/^www\./, '')
+        if (host !== currentHost && !host.endsWith('.' + currentHost)) count++
       } catch {}
     }
     return count
   } catch { return 0 }
 }
 
-function isTrackingStorageKey(key: string): boolean {
-  return STORAGE_TRACKER_KEYS.some(tk => key.startsWith(tk) || key.toLowerCase().includes(tk.toLowerCase()))
-}
-
-function scanStorage(): { localStorageItems: number; sessionStorageItems: number; trackingKeys: number } {
-  let lsItems = 0
-  let ssItems = 0
-  let trackingKeys = 0
-  try {
-    if (window.localStorage) {
-      lsItems = window.localStorage.length
-      for (let i = 0; i < window.localStorage.length; i++) {
-        const k = window.localStorage.key(i)
-        if (k && isTrackingStorageKey(k)) trackingKeys++
-      }
-    }
-  } catch {}
-  try {
-    if (window.sessionStorage) {
-      ssItems = window.sessionStorage.length
-    }
-  } catch {}
-  return { localStorageItems: lsItems, sessionStorageItems: ssItems, trackingKeys }
-}
-
 function scanPage() {
   const trackerResult = scanForTrackers()
-  const storageResult = scanStorage()
   const thirdParty = scanThirdPartyRequests()
 
   const result = {
@@ -289,141 +163,380 @@ function scanPage() {
     domain: window.location.hostname.replace(/^www\./, ''),
     scannedAt: Date.now(),
     trackers: trackerResult.trackers,
-    fingerprintingAttempts: fingerprintingCount,
     canvasAttempts,
     audioAttempts,
-    hasTrackingPixels: trackerResult.trackingPixels,
-    hasHiddenIframes: trackerResult.hiddenIframes,
-    hiddenElements: trackerResult.hiddenElementsFound,
-    beaconCalls,
-    suspiciousInlineScripts: trackerResult.trackers.filter(t => t.type === 'inline').length,
     webRTCLeakDetected: webRTCDetected,
     thirdPartyRequests: thirdParty,
     totalCookies: trackerResult.totalCookies,
-    localStorageItems: storageResult.localStorageItems,
-    sessionStorageItems: storageResult.sessionStorageItems,
   }
 
   safeSend({ type: 'PAGE_SCAN_RESULT', result })
 }
 
-function hookAPIs() {
-  const origToDataURL = HTMLCanvasElement.prototype.toDataURL
-  HTMLCanvasElement.prototype.toDataURL = function (this: HTMLCanvasElement) {
-    fingerprintingCount++
-    canvasAttempts++
-    return origToDataURL.apply(this, arguments as unknown as [string | undefined, number | undefined])
-  }
+// Fingerprinting + sensor hooks live in public/page-hooks.js, registered in
+// the manifest with "world": "MAIN" — patches made from this ISOLATED world
+// are invisible to website scripts (they call the real native APIs), which
+// is why every counter below stayed 0 before. This listener consumes the
+// page-world reports and feeds the same module-level counters scanPage() reads.
+// The one-shot setTimeout(scanPage, 2000) snapshotted counters before fp
+// scripts ran (most fire on load/interaction, well past 2s) — the stored
+// scan always read 0 canvas / 0 audio. Coalesce a re-scan shortly after any
+// hook report: scanPage reads LIVE counters, so one pending timer covers
+// whole bursts; sustained activity re-arms at most every 1.5s.
+let fpRescanQueued = false
+function queueFpRescan(): void {
+  if (fpRescanQueued) return
+  fpRescanQueued = true
+  setTimeout(() => {
+    fpRescanQueued = false
+    try { if (isContextValid()) scanPage() } catch {}
+  }, 1500)
+}
 
-  const origGetImageData = CanvasRenderingContext2D.prototype.getImageData
-  CanvasRenderingContext2D.prototype.getImageData = function (this: CanvasRenderingContext2D) {
-    fingerprintingCount++
-    canvasAttempts++
-    return origGetImageData.apply(this, arguments as unknown as [number, number, number, number, ImageDataSettings | undefined])
-  }
-
-  const origSendBeacon = navigator.sendBeacon
-  navigator.sendBeacon = function (this: Navigator) {
-    beaconCalls++
-    return origSendBeacon.apply(this, arguments as unknown as [string, BodyInit | undefined])
-  }
-
-  const OrigAudioContext = (window as any).AudioContext || (window as any).webkitAudioContext
-  if (OrigAudioContext) {
-    const AudioContextProxy = function (this: any, ...args: any[]) {
-      audioAttempts++
-      fingerprintingCount++
-      return new OrigAudioContext(...args)
-    } as any
-    AudioContextProxy.prototype = OrigAudioContext.prototype
-    ;(window as any).AudioContext = AudioContextProxy
-    if ((window as any).webkitAudioContext) {
-      ;(window as any).webkitAudioContext = AudioContextProxy
-    }
-  }
-
+window.addEventListener('message', (e) => {
+  if (e.source !== window) return
+  const d = e.data as { source?: string; kind?: string; api?: string } | null
+  if (!d || d.source !== '__SG_PAGE_HOOKS__') return
   try {
-    const OrigRTCPeerConnection = (window as any).RTCPeerConnection || (window as any).webkitRTCPeerConnection
-    if (OrigRTCPeerConnection) {
-      const RTCPeerConnectionProxy = function (this: any, ...args: any[]) {
-        webRTCDetected = true
-        return new OrigRTCPeerConnection(...args)
-      } as any
-      RTCPeerConnectionProxy.prototype = OrigRTCPeerConnection.prototype
-      ;(window as any).RTCPeerConnection = RTCPeerConnectionProxy
-      if ((window as any).webkitRTCPeerConnection) {
-        ;(window as any).webkitRTCPeerConnection = RTCPeerConnectionProxy
-      }
+    if (d.kind === 'fp') {
+      if (d.api === 'canvas') canvasAttempts++
+      else if (d.api === 'audio') audioAttempts++
+      queueFpRescan()
+    } else if (d.kind === 'rtc') {
+      webRTCDetected = true
+      queueFpRescan()
+    } else if (d.kind === 'sensor' && d.api) {
+      safeSend({ type: 'SENSOR_USAGE', data: { api: d.api, url: window.location.href, timestamp: Date.now() } })
     }
   } catch {}
+})
+
+// One role per page load — the strongest signal wins (signup > login).
+// Module-level so re-scans (DOM mutations) don't re-report the same action.
+let pageAuthRole: 'login' | 'signup' | null = null
+let loggedInDetected = false
+
+// Reset detection state on SPA navigation so a login-form page doesn't
+// suppress logged-in detection on the post-login dashboard.
+function resetAuthState(): void {
+  pageAuthRole = null
+  loggedInDetected = false
+  reportedPasswordForms.clear()
 }
 
-function sendFingerprint(): void {
-  if (!isContextValid()) { cleanup(); return }
-  safeSend({ type: 'FINGERPRINT_REPORT', fingerprint: collectFingerprint() })
+// The 10-second interval used to re-send PASSWORD_FORM_DETECTED for every
+// open form forever, churning the stored list — one send per form signature.
+const reportedPasswordForms = new Set<string>()
+
+const host = (): string => window.location.hostname.replace(/^www\./, '')
+
+// Climb a few ancestor levels from a bare password input collecting button /
+// submit / heading text plus aria-label and placeholder — the formless
+// equivalent of getFormSignals().
+function gatherContextText(input: HTMLInputElement): string {
+  const parts: string[] = [input.getAttribute('aria-label') || '', input.placeholder || '']
+  let node: HTMLElement | null = input.closest('form') || input.parentElement
+  for (let i = 0; node && i < 3; i++) {
+    node.querySelectorAll('button, input[type="submit"], h1, h2').forEach(el =>
+      parts.push(el.textContent || (el as HTMLInputElement).value || ''))
+    node = node.parentElement
+  }
+  return parts.join(' ').slice(0, 500)
 }
 
-function trackHttps(): void {
-  safeSend({
-    type: 'HTTPS_UPDATE',
-    isHttps: window.location.protocol === 'https:',
-  })
+function containerHasUsername(input: HTMLInputElement): boolean {
+  let scope: HTMLElement | null = input.closest('form') || input.parentElement
+  for (let i = 0; scope && i < 3; i++) {
+    if (scope.querySelector(USERNAME_INPUT_SELECTORS)) return true
+    scope = scope.parentElement
+  }
+  return false
+}
+
+// One role per page load — report it once.
+function ensureRoleForForm(form: HTMLFormElement, pw: HTMLInputElement): void {
+  if (pageAuthRole) return
+  const role = classifyAuthFromForm(getFormSignals(form, pw))
+  if (role) {
+    pageAuthRole = role
+    safeSend({ type: 'ACCOUNT_AUTH_DETECTED', domain: host(), role })
+  }
 }
 
 function detectPasswordForms(): void {
   const forms = document.querySelectorAll('form')
+  let reportedRole = pageAuthRole
   for (const form of forms) {
-    const passwordInput = form.querySelector('input[type="password"]')
-    if (passwordInput) {
+    const passwordInput = form.querySelector<HTMLInputElement>('input[type="password"]')
+    if (!passwordInput) continue
+    const action = (form as HTMLFormElement).action || ''
+    const autocomplete = passwordInput.getAttribute('autocomplete') || ''
+    const signature = `${action}\u0000${autocomplete}`
+    if (!reportedPasswordForms.has(signature)) {
+      reportedPasswordForms.add(signature)
       safeSend({
         type: 'PASSWORD_FORM_DETECTED',
         url: window.location.href,
         hasPasswordField: true,
         isOverHttp: window.location.protocol !== 'https:',
-        formAction: (form as HTMLFormElement).action || '',
-        autocomplete: passwordInput.getAttribute('autocomplete') || '',
+        formAction: action,
+        autocomplete,
       })
     }
+    if (reportedRole) continue
+
+    const signals = getFormSignals(form as HTMLFormElement, passwordInput)
+    const role = classifyAuthFromForm(signals)
+
+    if (role) {
+      reportedRole = role
+      pageAuthRole = role
+      safeSend({ type: 'ACCOUNT_AUTH_DETECTED', domain: host(), role })
+    }
+  }
+
+  // Bare password inputs without a <form> wrapper — Google, X and most SPAs
+  // render login UI this way, and the loop above never sees them.
+  if (!reportedRole) {
+    for (const input of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'))) {
+      if (input.closest('form')) continue // already handled above
+      const signature = 'bare\u0000' + `${input.name || ''}\u0000${input.id || ''}\u0000${input.getAttribute('autocomplete') || ''}`
+      if (reportedPasswordForms.has(signature)) continue
+      reportedPasswordForms.add(signature)
+      safeSend({
+        type: 'PASSWORD_FORM_DETECTED',
+        url: window.location.href,
+        hasPasswordField: true,
+        isOverHttp: window.location.protocol !== 'https:',
+        formAction: '',
+        autocomplete: input.getAttribute('autocomplete') || '',
+      })
+      const role = classifyPasswordInput({
+        autocomplete: input.getAttribute('autocomplete') || '',
+        contextText: gatherContextText(input),
+        hasUsernameField: containerHasUsername(input),
+        path: window.location.pathname,
+      })
+      if (role) {
+        reportedRole = role
+        pageAuthRole = role
+        safeSend({ type: 'ACCOUNT_AUTH_DETECTED', domain: host(), role })
+      }
+    }
+  }
+
+  // Always check for logged-in state, independent of form detection.
+  // This catches post-login pages (logout link) even when the login form
+  // was on a previous URL and is no longer in the DOM.
+  if (!loggedInDetected) {
+    detectLoggedInState()
   }
 }
 
-function isContextValid(): boolean {
+function detectLoggedInState(): void {
+  // Scan anchors AND buttons — many sites render "Log out" as a <button>.
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('a, button'))
+  const candidates = nodes.map(el => ({
+    text: el.textContent || '',
+    className: typeof el.className === 'string' ? el.className : '',
+    href: el.tagName === 'A' ? (el as HTMLAnchorElement).href || '' : '',
+  }))
+  const hit = findLogoutIndicator(candidates, window.location.origin)
+  if (!hit) return
+  loggedInDetected = true
+  // No `role` — a logout link alone is weak evidence. Submit-proofs (which
+  // carry the role) are what let unknown sites auto-track.
+  safeSend({ type: 'ACCOUNT_LOGGED_IN', domain: host() })
+}
+
+const ERROR_SELECTORS = '.error, .error-message, .alert-danger, .form-error, [aria-invalid="true"], .invalid-feedback, .error-text'
+let authOutcomeTimer: ReturnType<typeof setTimeout> | null = null
+
+// --- Auth attempt proof -----------------------------------------------------
+// An attempt must survive BOTH outcomes: SPA logins stay on this page
+// (checkAuthOutcome decides after 800ms), classic logins navigate away and
+// the 800ms timer dies with the page — so the attempt is also parked in
+// sessionStorage and resolved by consumePendingAuth() on the next load.
+const PENDING_AUTH_KEY = 'sg_pending_auth'
+
+function markAuthAttempt(role: 'login' | 'signup'): void {
+  // Only arm when a password field actually holds text. Clicking a button
+  // near an EMPTY login form (or Enter-in-empty-password) fired this too,
+  // and "fields cleared 800ms later" then fabricated verified accounts for
+  // sites the user never logged into.
+  const typed = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'))
+    .some(i => document.contains(i) && i.value.length > 0)
+  if (!typed) return
+  try { sessionStorage.setItem(PENDING_AUTH_KEY, JSON.stringify({ t: Date.now(), role })) } catch {}
+  if (authOutcomeTimer) clearTimeout(authOutcomeTimer)
+  authOutcomeTimer = setTimeout(() => checkAuthOutcome(role), 800)
+}
+
+function clearPendingAuth(): void {
+  try { sessionStorage.removeItem(PENDING_AUTH_KEY) } catch {}
+}
+
+// SPA path: form replaced or password cleared = success; inline error markers
+// = failure. Full-page navigations are resolved by consumePendingAuth().
+function checkAuthOutcome(role: 'login' | 'signup'): void {
+  authOutcomeTimer = null
+  const pws = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'))
+  const stillFilled = pws.some(i => document.contains(i) && i.value.length > 0)
+  clearPendingAuth()
+  if (!stillFilled) {
+    safeSend({ type: 'ACCOUNT_LOGGED_IN', domain: host(), role })
+    return
+  }
+  if (document.querySelectorAll(ERROR_SELECTORS).length > 0) {
+    safeSend({ type: 'ACCOUNT_LOGIN_FAILED', domain: host() })
+  }
+}
+
+// Classic-login handoff: runs at page load after a submit navigation.
+// Fresh marker + NO password field in the DOM anymore = success.
+function consumePendingAuth(): void {
+  let rec: { t?: number; role?: string } | null = null
+  try { rec = JSON.parse(sessionStorage.getItem(PENDING_AUTH_KEY) || 'null') } catch {}
+  clearPendingAuth()
+  if (!rec || typeof rec.t !== 'number' || Date.now() - rec.t > 60000) return
+  if (rec.role !== 'login' && rec.role !== 'signup') return
+  // Error re-render keeps the password field — not a success.
+  if (document.querySelector('input[type="password"]')) return
+  safeSend({ type: 'ACCOUNT_LOGGED_IN', domain: host(), role: rec.role })
+}
+
+document.addEventListener('submit', (e: SubmitEvent) => {
+  const form = e.target as HTMLFormElement
+  const pw = form.querySelector?.<HTMLInputElement>('input[type="password"]')
+  if (!pw) return
+  ensureRoleForForm(form, pw)
+  markAuthAttempt(pageAuthRole || 'login')
+}, true)
+
+// Formless submits fire no `submit` event — clicks near a password field and
+// Enter-in-password count as attempts. The OUTCOME check is the real gate
+// (a random nav click does not clear the password field), so over-triggering
+// here is harmless.
+document.addEventListener('click', (e: MouseEvent) => {
+  const el = e.target as HTMLElement | null
+  const btn = el?.closest?.('button, [role="button"], input[type="submit"]') as HTMLElement | null
+  if (!btn) return
+  let node: HTMLElement | null = btn.parentElement
+  let near = btn.querySelector('input[type="password"]') !== null
+  for (let i = 0; !near && node && i < 4; i++) {
+    near = node.querySelector('input[type="password"]') !== null
+    node = node.parentElement
+  }
+  if (near) markAuthAttempt(pageAuthRole || 'login')
+}, true)
+
+document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key !== 'Enter') return
+  const t = e.target as HTMLElement | null
+  if (t instanceof HTMLInputElement && t.type === 'password') markAuthAttempt(pageAuthRole || 'login')
+}, true)
+
+// SPA frameworks render login/signup forms long after the document_start scan
+// — re-scan as the DOM changes so the account role actually gets reported.
+let authObserver: MutationObserver | null = null
+let authRescanTimer: ReturnType<typeof setTimeout> | null = null
+
+function startAuthObserver(): void {
+  if (authObserver) return
+  authObserver = new MutationObserver(() => {
+    if (authRescanTimer) return
+    authRescanTimer = setTimeout(() => {
+      authRescanTimer = null
+      detectPasswordForms()
+    }, 1000)
+  })
+  authObserver.observe(document.documentElement, { childList: true, subtree: true })
+}
+
+function stopAuthObserver(): void {
+  if (authObserver) {
+    authObserver.disconnect()
+    authObserver = null
+  }
+  if (authRescanTimer) {
+    clearTimeout(authRescanTimer)
+    authRescanTimer = null
+  }
+}
+
+export function isContextValid(): boolean {
   try { return Boolean(chrome.runtime?.id) } catch { return false }
 }
 
-function safeSend(msg: any): void {
+export function safeSend(msg: any): void {
+  if (!isContextValid()) return
   try {
-    if (!chrome.runtime?.id) { console.warn('safeSend: extension context invalidated'); return }
-    chrome.runtime.sendMessage(msg).catch(e => console.warn('safeSend failed:', msg.type, e))
-  } catch (e) { console.warn('safeSend error:', e); cleanup() }
+    chrome.runtime.sendMessage(msg).catch(() => {
+      // MV3 service worker may need time to wake up - retry once
+      if (!msg._retry) {
+        setTimeout(() => {
+          try {
+            if (isContextValid()) chrome.runtime.sendMessage({ ...msg, _retry: true }).catch(() => {})
+          } catch {}
+        }, 200)
+      }
+    })
+  } catch { /* context invalidated mid-send; do not tear down the scan */ }
 }
 
 function cleanup(): void {
-  if (fpInterval !== null) { clearInterval(fpInterval); fpInterval = null }
-  window.removeEventListener('resize', sendFingerprint)
+  if (authScanInterval !== null) { clearInterval(authScanInterval); authScanInterval = null }
+  if (authOutcomeTimer) { clearTimeout(authOutcomeTimer); authOutcomeTimer = null }
   stopUrlCleaner()
+  stopPolicyDetection()
+  stopAuthObserver()
 }
 
-chrome.runtime.onMessage.addListener((msg: any, _sender: any, sendResponse: any) => {
-  if (msg.type === 'SCAN_PASSWORD_FORMS') { detectPasswordForms(); if (sendResponse) sendResponse({ success: true }) }
+chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: any) => {
+  if (sender?.id && sender.id !== chrome.runtime.id) return
+  if (msg.type === 'SCAN_PASSWORD_FORMS') { resetAuthState(); detectPasswordForms(); if (sendResponse) sendResponse({ success: true }) }
   if (msg.type === 'SCAN_PAGE') { scanPage(); if (sendResponse) sendResponse({ success: true }) }
+  if (msg.type === 'FIND_POLICY_LINKS') { handleFindPolicyLinks(msg.scrapeOnly); if (sendResponse) sendResponse({ success: true }) }
+  if (msg.type === 'PROBE_POLICY') { probePolicyPaths(true).catch(() => {}); if (sendResponse) sendResponse({ success: true }) }
+  if (msg.type === 'PROBE_POLICY_URL') { fetchPolicyUrlForProbe(msg.url).catch(() => {}); if (sendResponse) sendResponse({ success: true }) }
 })
 
 try {
   if (!isContextValid()) throw new Error('Extension context invalidated')
 
-  hookAPIs()
-  sendFingerprint()
-  trackHttps()
   detectPasswordForms()
+  // Re-scan for login forms after DOM is fully loaded + on an interval,
+  // so SPA-rendered forms (Google, etc.) that appear later are still caught.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { consumePendingAuth(); detectPasswordForms() }, { once: true })
+  } else {
+    setTimeout(() => { consumePendingAuth(); detectPasswordForms() }, 500)
+  }
+  authScanInterval = setInterval(detectPasswordForms, 10000)
 
   setTimeout(scanPage, 2000)
 
-  window.addEventListener('resize', sendFingerprint)
-  fpInterval = setInterval(sendFingerprint, 60000)
+  // Reset auth detection state on SPA navigation so login-form pages
+  // don't suppress logged-in detection on post-login dashboards.
+  const origPush = window.history.pushState.bind(window.history)
+  const origReplace = window.history.replaceState.bind(window.history)
+  window.history.pushState = (data, unused, url) => { const r = origPush(data, unused, url); resetAuthState(); return r }
+  window.history.replaceState = (data, unused, url) => { const r = origReplace(data, unused, url); resetAuthState(); return r }
+  window.addEventListener('popstate', resetAuthState)
 
   initUrlCleaner()
-  initPermissionMonitor()
+  initPolicyDetection()
+  startAuthObserver()
+
+  // Injected at document_start — the DOM is empty, so link detection
+  // would find nothing. Run once the DOM is ready (the background also
+  // re-asks via FIND_POLICY_LINKS when the popup opens).
+  const runLinkDetection = () => detectPolicyLinks()
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', runLinkDetection, { once: true })
+  } else {
+    runLinkDetection()
+  }
 } catch { cleanup() }
 
 window.addEventListener('beforeunload', cleanup)

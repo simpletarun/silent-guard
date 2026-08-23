@@ -70,6 +70,7 @@ export default function CategoryScore({ score, size = 'medium' }: Props) {
         <div className="cat-score-factors">
           {safe.factors.map((f, i) => (
             <div key={i} className="cat-factor-row">
+              <span className={`cat-factor-dot ${f.type}`} />
               <span className="cat-factor-label">{f.label}</span>
               <span className={`cat-factor-value ${f.type}`}>
                 {f.score > 0 ? `+${f.score}` : f.score}
@@ -89,11 +90,14 @@ export default function CategoryScore({ score, size = 'medium' }: Props) {
         .cat-score-number { font-weight: 800; line-height: 1; letter-spacing: -0.5px; }
         .cat-score-label { font-weight: 700; letter-spacing: 0.3px; }
         .cat-score-factors { width: 100%; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 6px; }
-        .cat-factor-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 10px; }
-        .cat-factor-label { color: var(--text-secondary); flex: 1; }
-        .cat-factor-value { font-weight: 700; margin-left: 8px; }
-        .cat-factor-value.positive { color: var(--success); }
-        .cat-factor-value.negative { color: var(--danger); }
+        .cat-factor-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; font-size: 10px; }
+        .cat-factor-dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 3px; flex-shrink: 0; }
+        .cat-factor-dot.positive { background: var(--success); }
+        .cat-factor-dot.negative { background: var(--danger); }
+        .cat-factor-label { color: var(--text-secondary); flex: 1; min-width: 0; line-height: 1.4; }
+        .cat-factor-value { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; flex-shrink: 0; min-width: 34px; text-align: right; }
+        .cat-factor-value.positive { color: var(--success); background: var(--success-bg); }
+        .cat-factor-value.negative { color: var(--danger); background: var(--danger-bg); }
       `}</style>
     </div>
   )

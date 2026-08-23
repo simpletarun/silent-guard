@@ -3,9 +3,8 @@ import { CategoryState, AccountSite } from '../../../types'
 import CategoryScore from '../shared/CategoryScore'
 import CategoryEvents from '../shared/CategoryEvents'
 import CategoryActions from '../shared/CategoryActions'
-import { useToast, default as ToastBar } from '../shared/Toast'
-
-const DOMAIN_RE = /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
+import { showToast } from '../shared/Toast'
+import { normalizeDomain, isValidDomain, canonicalAccountDomain } from '../../../utils/domain'
 
 interface Props {
   category: CategoryState
@@ -13,10 +12,10 @@ interface Props {
   onAcknowledge: (id: string) => void
   onAddAccount: (domain: string, name: string) => void
   onRemoveAccount: (domain: string) => void
+  refresh?: () => Promise<unknown> | void
 }
 
-export default function AccountsDashboard({ category, accounts, onAcknowledge, onAddAccount, onRemoveAccount }: Props) {
-  const { toasts, show } = useToast()
+export default function AccountsDashboard({ category, accounts, onAcknowledge, onAddAccount, onRemoveAccount, refresh }: Props) {
   const cat = category || { id: 'accounts', label: 'Accounts', icon: '👤', enabled: true, score: { total: 50, maxScore: 100, factors: [] }, events: [], metrics: [], actions: [], settings: {}, lastScan: 0 }
   const [newDomain, setNewDomain] = React.useState('')
   const [newName, setNewName] = React.useState('')
@@ -34,23 +33,31 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
   const filtered = q ? accounts.filter(a => a.domain.toLowerCase().includes(q) || a.name.toLowerCase().includes(q)) : accounts
 
   const metrics = [
-    { label: 'Tracked', value: `${filtered.length}`, icon: '👤', status: 'good' as const },
+    // Both tiles read the FULL list — "Tracked 1 / Verified 6" under a
+    // search filter made no sense side by side.
+    { label: 'Tracked', value: `${accounts.length}`, icon: '👤', status: 'good' as const },
+    { label: 'Verified', value: `${accounts.filter(a => a.status === 'verified').length}`, icon: '✅', status: 'good' as const },
   ]
 
   const handleAdd = () => {
-    if (!newDomain || !newName) return
-    if (!DOMAIN_RE.test(newDomain)) {
-      show('Invalid domain format', 'error')
+    const clean = normalizeDomain(newDomain)
+    if (!isValidDomain(clean)) {
+      showToast('Invalid domain format', 'error')
       return
     }
-    onAddAccount(newDomain, newName)
+    const canonical = canonicalAccountDomain(clean)
+    if (accounts.some(a => a.domain === canonical)) {
+      showToast(`Already tracking ${canonical}`, 'error')
+      return
+    }
+    onAddAccount(clean, newName)
     setNewDomain('')
     setNewName('')
   }
 
+
   return (
     <div className="cat-dashboard">
-      <ToastBar toasts={toasts} />
       <div className="card cat-header-card">
         <CategoryScore score={cat.score} size="medium" />
       </div>
@@ -79,6 +86,7 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
           }} />
           {filtered.length > 0 && (
             <button className="btn btn-outline btn-sm acc-open-all" onClick={() => {
+              if (!window.confirm(`Open security pages for all ${filtered.length} tracked account(s)?`)) return
               filtered.forEach(acc => {
                 if (acc.securityUrl) chrome.tabs.create({ url: acc.securityUrl }).catch(() => {})
               })
@@ -94,6 +102,9 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
                 <span className="acc-item-name">{acc.name}</span>
                 <span className="acc-item-domain">{acc.domain}</span>
               </div>
+              <span className={`acc-badge ${acc.status === 'verified' ? 'acc-badge-ok' : 'acc-badge-no'}`}>
+                {acc.status === 'verified' ? '✓ verified' : 'unverified'}
+              </span>
             </div>
             <div className="acc-item-actions">
               {acc.securityUrl && (
@@ -101,14 +112,22 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
                   Security
                 </button>
               )}
-              <button className="btn btn-outline btn-sm acc-remove" onClick={() => onRemoveAccount(acc.domain)}>
+              <button className="btn btn-outline btn-sm acc-remove" onClick={() => {
+                if (window.confirm(`Remove ${acc.domain} from tracked accounts?`)) onRemoveAccount(acc.domain)
+              }}>
                 Remove
               </button>
             </div>
           </div>
-        )) : (
+        )) : q ? (
           <div className="cat-events-empty">
-            <p className="cat-events-clean">{search ? 'No matching accounts' : 'No accounts added yet'}</p>
+            <p className="cat-events-clean">No accounts match &quot;{debouncedSearch}&quot;</p>
+            <p className="cat-events-hint">Try a different name or domain.</p>
+          </div>
+        ) : (
+          <div className="cat-events-empty">
+            <p className="cat-events-clean">No accounts added yet</p>
+            <p className="cat-events-hint">Accounts are auto-detected when you visit login or signup pages. You can also manually add accounts below.</p>
           </div>
         )}
       </div>
@@ -128,7 +147,7 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
 
       <div className="card">
         <div className="card-title">Recent Events</div>
-        <CategoryEvents events={cat.events} onAcknowledge={onAcknowledge} compact />
+        <CategoryEvents events={cat.events} onAcknowledge={onAcknowledge} lastScan={cat.lastScan} hint="Events appear when you sign in, create an account, or a session risk is detected." />
       </div>
       <CategoryActions actions={actions} />
       <style>{`
@@ -149,10 +168,14 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
         }
         .acc-item:first-child { padding-top: 0; }
         .acc-item:last-child { border-bottom: none; padding-bottom: 0; }
-        .acc-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .acc-item-header { display: flex; flex-wrap: wrap; gap: 4px; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .acc-item-info { display: flex; flex-direction: column; gap: 1px; }
         .acc-item-name { font-size: 13px; font-weight: 600; }
         .acc-item-domain { font-size: 10px; color: var(--text-muted); }
+        .cat-events-hint { font-size: 9px; color: var(--text-muted); font-style: italic; margin-top: 4px; }
+        .acc-badge { font-size: 7px; font-weight: 700; padding: 2px 6px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0; white-space: nowrap; }
+        .acc-badge-ok { background: var(--success-bg); color: var(--success); }
+        .acc-badge-no { background: var(--danger-bg); color: var(--danger); }
         .acc-item-actions { display: flex; gap: 6px; flex-wrap: wrap; }
         .acc-remove { color: var(--danger) !important; border-color: transparent !important; }
         .acc-remove:hover { background: var(--danger-bg) !important; color: var(--danger) !important; border-color: var(--danger) !important; }

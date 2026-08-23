@@ -1,20 +1,28 @@
 const TRACKING_PARAMS = new Set([
-  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
   'fbclid', 'gclid', 'gclsrc', 'dclid', 'msclkid',
-  'ref', 'si', 'yclid', '_openstat', 'wickedid', '_ga', '_gl',
+  // No bare 'ref': GitHub ?ref=branch, docs deep-links and CMS refs are
+  // functional, not tracking. Genuine ad-click params below are safe to strip.
+  'si', 'yclid', '_openstat', 'wickedid', '_ga', '_gl',
   'mc_cid', 'mc_eid', 'oly_anon_id', 'oly_enc_id',
   '_bta_tid', 'trk_contact', 'trk_msg', 'trk_module', 'trk_sid',
   'mtm_source', 'mtm_medium', 'mtm_campaign', 'mtm_keyword', 'mtm_content',
   'pk_source', 'pk_medium', 'pk_campaign', 'pk_keyword', 'pk_content',
+  'srsltid', 'gbraid', 'wbraid', 'twclid', 'igshid', 'mkt_tok', 'li_fat_id', 'zanpid',
 ])
 
 function cleanUrl(url: string): string {
   try {
-    const parsed = new URL(url, window.location.origin)
+    // Resolve relative hrefs against <base href> — window.location.origin
+    // mangles links on pages that declare a different document base.
+    const parsed = new URL(url, document.baseURI || window.location.origin)
     let changed = false
-    for (const key of parsed.searchParams.keys()) {
+    // Snapshot the keys first — URLSearchParams.keys() is a live iterator,
+    // so deleting while iterating skips every other parameter.
+    for (const rawKey of [...parsed.searchParams.keys()]) {
+      const key = rawKey.toLowerCase()
       if (TRACKING_PARAMS.has(key)) {
-        parsed.searchParams.delete(key)
+        parsed.searchParams.delete(rawKey)
         changed = true
       }
     }
@@ -112,4 +120,17 @@ export function initUrlCleaner(): void {
     cleanAllLinks()
     startObserver()
   })
+  // SPA navigations never fire popstate — track pushState/replaceState too.
+  const origPush = window.history.pushState.bind(window.history)
+  const origReplace = window.history.replaceState.bind(window.history)
+  window.history.pushState = (data, unused, url) => {
+    const r = origPush(data, unused, url)
+    cleanCurrentUrl()
+    return r
+  }
+  window.history.replaceState = (data, unused, url) => {
+    const r = origReplace(data, unused, url)
+    cleanCurrentUrl()
+    return r
+  }
 }

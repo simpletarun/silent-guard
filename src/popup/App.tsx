@@ -1,6 +1,5 @@
 import { useState, useEffect, Component, ReactNode } from 'react'
 import { SecurityCategory } from '../types'
-import { collectFingerprint } from '../utils/fingerprint'
 import { useSecurityState, useActions } from './hooks/useSecurityEngine'
 import OverviewDashboard from './components/overview/OverviewDashboard'
 import NetworkDashboard from './components/network/NetworkDashboard'
@@ -9,6 +8,9 @@ import ExtensionsDashboard from './components/extensions/ExtensionsDashboard'
 import PasswordDashboard from './components/passwords/PasswordDashboard'
 import PrivacyDashboard from './components/privacy/PrivacyDashboard'
 import AccountsDashboard from './components/accounts/AccountsDashboard'
+import PolicyMatrixDashboard from './components/policy/PolicyMatrixDashboard'
+import ToastBar, { useToast, showToast } from './components/shared/Toast'
+import PanicButton from './components/shared/PanicButton'
 type Tab = SecurityCategory
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
@@ -19,6 +21,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'passwords', label: 'Passwords', icon: '🔑' },
   { id: 'privacy', label: 'Privacy', icon: '🛡️' },
   { id: 'accounts', label: 'Accounts', icon: '👤' },
+  { id: 'policy', label: 'Policy', icon: '📜' },
 ]
 
 interface Props { children: ReactNode }
@@ -45,6 +48,57 @@ export default function App() {
   const { state, loading, refresh, removeAccount } = useSecurityState()
   const actions = useActions(refresh)
   const [activeTab, setActiveTab] = useState<Tab>('overview')
+  const [refreshing, setRefreshing] = useState(false)
+  // One global toast host — showToast() dispatches a window event that any
+  // mounted ToastBar would catch; mounting it per-dashboard left all but
+  // Passwords/Accounts silent.
+  const { toasts } = useToast()
+
+  const handleRefresh = () => {
+    if (refreshing) return
+    setRefreshing(true)
+    // Kick off background scans (extensions, IP, active-tab page scan, policy)
+    chrome.runtime.sendMessage({ type: 'POPUP_OPENED' }).catch(() => {})
+    refresh()
+      .then(() => new Promise(r => setTimeout(r, 1200)))
+      .then(refresh)
+      .catch(() => {})
+      .finally(() => {
+        setTimeout(() => setRefreshing(false), 300)
+      })
+  }
+
+  const [reloadingTabs, setReloadingTabs] = useState(false)
+
+  // One click reloads every open tab in every window. All reload commands
+  // are dispatched in PARALLEL in one tick — a sequential await loop died
+  // whenever the popup unloaded midway (any focus loss kills the popup),
+  // leaving most tabs un-reloaded.
+  const handleRefreshTabs = async () => {
+    if (reloadingTabs) return
+    setReloadingTabs(true)
+    try {
+      const tabs = await chrome.tabs.query({})
+      const targets = tabs.filter(t => typeof t.id === 'number') as (chrome.tabs.Tab & { id: number })[]
+      const results = await Promise.allSettled(targets.map(t => chrome.tabs.reload(t.id)))
+      const ok = results.filter(r => r.status === 'fulfilled').length
+      showToast(
+        ok > 0 ? `Reloaded ${ok} tab${ok === 1 ? '' : 's'}` : 'No open tabs to reload',
+        ok > 0 ? 'success' : 'info'
+      )
+    } catch {
+      showToast('Could not reload tabs', 'error')
+    } finally {
+      setReloadingTabs(false)
+    }
+  }
+
+  useEffect(() => {
+    // The scrolling container persists across switches — without this the
+    // new tab opens pre-scrolled to wherever the previous one ended.
+    const el = document.querySelector<HTMLElement>('.tab-content')
+    if (el) el.scrollTop = 0
+  }, [activeTab])
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -56,16 +110,40 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const fp = collectFingerprint()
-    chrome.runtime.sendMessage({ type: 'FINGERPRINT_REPORT', fingerprint: fp }).catch(() => {})
-    chrome.runtime.sendMessage({ type: 'POPUP_OPENED' }).then(() => refresh()).catch(() => {})
+    // Warm up background by initializing it
+    chrome.runtime.sendMessage({ type: 'POPUP_OPENED' }).catch(() => {})
+
+    // Refresh with retry
+    const attemptRefresh = (attempt: number) => {
+      refresh().catch(() => {
+        if (attempt < 3) {
+          setTimeout(() => attemptRefresh(attempt + 1), 300 * attempt)
+        }
+      })
+    }
+    attemptRefresh(0)
   }, [])
 
   if (loading || !state) {
+    if (!loading && !state) {
+      return (
+        <div className="app-loading">
+          <div className="loading-spinner" />
+          <p className="app-loading-text">Unable to reach security core</p>
+          <p className="app-loading-sub">The background service may still be waking up</p>
+          <button className="btn btn-primary" onClick={handleRefresh}>Retry</button>
+        </div>
+      )
+    }
     return (
       <div className="app-loading">
         <div className="loading-spinner" />
-        <p>Loading SilentGuard…</p>
+        <p className="app-loading-text">
+          {loading ? 'Initializing security...' : 'Preparing...'}
+        </p>
+        <div className="app-loading-sub">
+          {loading ? 'Security modules launching...' : 'Ready'}
+        </div>
       </div>
     )
   }
@@ -79,22 +157,20 @@ export default function App() {
           <NetworkDashboard
             category={state.categories.network}
             network={state.network}
-            onAcknowledge={actions.acknowledgeEvent}
           />
         )
       case 'device':
         return (
           <DeviceDashboard
             category={state.categories.device}
-            fingerprint={state.fingerprint}
-            onAcknowledge={actions.acknowledgeEvent}
           />
         )
       case 'extensions':
         return (
           <ExtensionsDashboard
             category={state.categories.extensions}
-            extensions={state.dangerousExtensions}
+            extensions={state.installedExtensions || state.dangerousExtensions || []}
+            flagged={state.dangerousExtensions || []}
             onAcknowledge={actions.acknowledgeEvent}
             onRemove={actions.removeExtension}
             onScan={actions.scanExtensions}
@@ -107,6 +183,9 @@ export default function App() {
           <PrivacyDashboard
             category={state.categories.privacy}
             pageScans={state.pageScans}
+            downloadScans={state.downloadScans}
+            securityHeaders={state.securityHeaders}
+            policyReports={state.policyReports || []}
             onAcknowledge={actions.acknowledgeEvent}
           />
         )
@@ -118,8 +197,11 @@ export default function App() {
             onAcknowledge={actions.acknowledgeEvent}
             onAddAccount={actions.addAccount}
             onRemoveAccount={removeAccount}
+            refresh={refresh}
           />
         )
+      case 'policy':
+        return <PolicyMatrixDashboard category={state.categories.policy} lastProbes={state.lastPolicyProbes} />
       default:
         return null
     }
@@ -130,6 +212,22 @@ export default function App() {
       <div className="app">
         <header className="app-header">
           <h1>SilentGuard</h1>
+          <div className="header-actions">
+            <button
+              type="button"
+              className={`refresh-tabs-btn ${reloadingTabs ? 'spinning' : ''}`}
+              onClick={handleRefreshTabs}
+              disabled={reloadingTabs}
+              title="Refresh all open websites"
+              aria-label="Refresh all open websites"
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path d="M13.6 8a5.6 5.6 0 1 1-1.64-3.96" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                <path d="M14 1.6v3h-3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <PanicButton state={state} />
+          </div>
         </header>
 
         <div className="tab-bar" role="tablist" aria-label="Security categories">
@@ -153,6 +251,7 @@ export default function App() {
         </div>
 
         <footer className="app-footer"></footer>
+        <ToastBar toasts={toasts} />
       </div>
     </ErrorBoundary>
   )

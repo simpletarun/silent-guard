@@ -1,5 +1,5 @@
-import { RiskEvent, ForensicSnapshot } from '../../types'
-import { addCategoryEvent, getSecurityState, getSettings, updateSecurityState } from '../storage'
+import { RiskEvent, CorrelatedIncident } from '../../types'
+import { addCategoryEvent, getSecurityState, getSettings } from '../storage'
 import { notifyRiskEvent } from '../notifications'
 import { recalculateCategoryScore } from '../engine'
 
@@ -47,20 +47,33 @@ export function storageChangedHandler(changes: { [key: string]: chrome.storage.S
   const stateChange = changes['silent_guard_state']
   if (!stateChange) return
 
-  const newVal = stateChange.newValue as { securityState?: { correlatedIncidents?: any[] } } | undefined
-  const oldVal = stateChange.oldValue as { securityState?: { correlatedIncidents?: any[] } } | undefined
+  const newVal = stateChange.newValue as { securityState?: { correlatedIncidents?: CorrelatedIncident[] } } | undefined
+  const oldVal = stateChange.oldValue as { securityState?: { correlatedIncidents?: CorrelatedIncident[] } } | undefined
   const newIncidents = newVal?.securityState?.correlatedIncidents || []
   const oldIncidents = oldVal?.securityState?.correlatedIncidents || []
 
-  if (newIncidents.length <= oldIncidents.length) return
+  // Incidents are prepended (correlationEngine), so compare by ID — a plain
+  // slice by length acted on the stale tail and never hit the new incident.
+  const oldIds = new Set(oldIncidents.map(i => i.id))
+  const freshIncidents = newIncidents.filter(i => !oldIds.has(i.id))
+  if (freshIncidents.length === 0) return
 
-  getSettings().then(settings => {
+  getSettings().then(async settings => {
     if (!settings.autoKillSessions && !settings.autoRotateCredentials) return
-    getSecurityState().then(state => {
-      const accDomains = (state.accounts || []).map(a => a.domain)
-      incidentQueue.push({ domains: settings.autoKillSessions ? accDomains : [], breached: [] })
-      processIncidentQueue()
-    }).catch(() => {})
+
+    const state = await getSecurityState().catch(() => null)
+    if (!state) return
+    const tracked = new Set((state.accounts || []).map(a => a.domain))
+
+    for (const incident of freshIncidents) {
+      const domains = (incident.domains || []).filter(d => tracked.has(d))
+      if (domains.length === 0) continue
+      incidentQueue.push({
+        domains: settings.autoKillSessions ? domains : [],
+        breached: settings.autoRotateCredentials ? domains : [],
+      })
+    }
+    if (incidentQueue.length > 0) processIncidentQueue()
   }).catch(() => {})
 }
 
@@ -68,9 +81,27 @@ export async function autoKillSessions(domains: string[]): Promise<void> {
   for (const domain of domains) {
     try {
       try {
-        const cookies = await chrome.cookies.getAll({ domain })
-        for (const cookie of cookies) {
-          chrome.cookies.remove({ url: `https://${domain}${cookie.path}`, name: cookie.name }).catch(() => {})
+        // Enumerate every cookie store and include partitioned (CHIPS)
+        // cookies — the default getAll misses them, so "kill sessions"
+        // silently left live session cookies on CHIPS-enabled sites.
+        const stores = await chrome.cookies.getAllCookieStores()
+        const seen = new Set<string>()
+        for (const store of stores) {
+          const cookies = await chrome.cookies.getAll({ domain, partitionKey: {} as chrome.cookies.CookiePartitionKey, storeId: store.id })
+          for (const cookie of cookies) {
+            // Subdomain-scoped cookies (Domain=.accounts.example.com) must be
+            // removed with their own domain, not the apex one.
+            const cookieDomain = cookie.domain.replace(/^\./, '')
+            const key = `${store.id}|${cookie.domain}|${cookie.path}|${cookie.name}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            chrome.cookies.remove({
+              url: `https://${cookieDomain}${cookie.path}`,
+              name: cookie.name,
+              storeId: store.id,
+              partitionKey: cookie.partitionKey,
+            }).catch(() => {})
+          }
         }
       } catch { /* skip domain */ }
 
@@ -95,7 +126,7 @@ export async function autoKillSessions(domains: string[]): Promise<void> {
   }
 }
 
-export async function autoRotateCredentials(accounts: string[]): Promise<void> {
+async function autoRotateCredentials(accounts: string[]): Promise<void> {
   for (const account of accounts) {
     const changeUrl = CHANGE_PASSWORD_URLS[account] || `https://${account}/account/security`
     await chrome.tabs.create({ url: changeUrl, active: true }).catch(() => {})
@@ -117,87 +148,3 @@ export async function autoRotateCredentials(accounts: string[]): Promise<void> {
   }
 }
 
-export async function isolateNetwork(): Promise<void> {
-  try {
-    const extensions = await chrome.management.getAll()
-    for (const ext of extensions) {
-      if (ext.id === chrome.runtime.id) continue
-      if (ext.enabled && ext.type === 'extension') {
-        const riskyPerms = ['cookies', 'webRequest', 'tabs', '<all_urls>']
-        const hasRisky = (ext.permissions || []).some(p => riskyPerms.includes(p))
-        if (hasRisky) {
-          await chrome.management.setEnabled(ext.id, false).catch(() => {})
-        }
-      }
-    }
-  } catch { /* management API not available */ }
-
-  try {
-    await chrome.browsingData.remove({ since: Date.now() - 86400000 }, {
-      localStorage: true,
-      cookies: true,
-      cacheStorage: true,
-    })
-  } catch { /* browsingData not available */ }
-
-  const event: RiskEvent = {
-    id: crypto.randomUUID(),
-    type: 'network_change',
-    category: 'network',
-    severity: 'critical',
-    title: 'Network isolation activated',
-    description: 'Non-essential extensions disabled, browsing data cleared',
-    source: 'silent-guard',
-    timestamp: Date.now(),
-    acknowledged: false,
-  }
-  await addCategoryEvent('network', event)
-  await notifyRiskEvent(event)
-  await recalculateCategoryScore('network').catch(() => {})
-}
-
-export async function takeForensicSnapshot(trigger: string): Promise<void> {
-  try {
-    const tabs = await chrome.tabs.query({})
-    const extensions = await chrome.management.getAll()
-    const cookies = await chrome.cookies.getAll({})
-    const state = await getSecurityState()
-
-    const snapshot: ForensicSnapshot = {
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-      trigger,
-      openTabs: tabs.map(t => ({ url: t.url || '', title: t.title || '' })),
-      extensions: extensions.map(e => ({ id: e.id, name: e.name, enabled: e.enabled })),
-      cookies: cookies.map(c => ({ domain: c.domain, name: c.name, secure: c.secure || false })).slice(0, 100),
-      networkState: {
-        publicIp: state.network?.publicIp || 'unknown',
-        isVpn: state.network?.isVpn || false,
-      },
-      fingerprint: state.fingerprint,
-    }
-
-    const snapshots = state.forensicSnapshots || []
-    snapshots.unshift(snapshot)
-    if (snapshots.length > 10) snapshots.length = 10
-    await updateSecurityState({ forensicSnapshots: snapshots })
-
-    chrome.storage.local.set({ [`forensic_${snapshot.id}`]: JSON.stringify(snapshot) }).catch(() => {})
-
-    const event: RiskEvent = {
-      id: crypto.randomUUID(),
-      type: 'forensic_snapshot',
-      category: 'overview',
-      severity: 'medium',
-      title: `Forensic snapshot: ${trigger}`,
-      description: `${snapshot.openTabs.length} tabs, ${snapshot.extensions.length} extensions captured`,
-      source: trigger,
-      timestamp: Date.now(),
-      acknowledged: false,
-    }
-    await addCategoryEvent('overview', event)
-    await recalculateCategoryScore('overview')
-  } catch (e) {
-    console.error('Forensic snapshot failed:', e)
-  }
-}

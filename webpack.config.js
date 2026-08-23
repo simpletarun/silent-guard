@@ -40,7 +40,7 @@ module.exports = {
       patterns: [
         { from: 'public/manifest.json', to: 'manifest.json' },
         { from: 'public/icons', to: 'icons' },
-        { from: 'public/sensor-hooks.js', to: 'sensor-hooks.js' },
+        { from: 'public/page-hooks.js', to: 'page-hooks.js' },
       ],
     }),
   ],

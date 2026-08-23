@@ -1,16 +1,14 @@
 import { RiskEvent, AnomalyScore } from '../../types'
-import { addCategoryEvent, getSecurityState, updateSecurityState } from '../storage'
+import { addCategoryEvent, mutateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 interface DomainInfo {
   count: number
   firstSeen: number
   lastSeen: number
-  typicalHours: number[]
 }
 
 interface BrowsingProfile {
-  hourlyActivity: number[]
   domainsVisited: Record<string, DomainInfo>
   tabCountHistory: number[]
   activeHours: number[]
@@ -19,13 +17,19 @@ interface BrowsingProfile {
 
 const PROFILE_KEY = 'anomaly_profile'
 const TAB_SPIKE_COOLDOWN_MS = 1800000
+// Same reasoning as the tab spike — the burst condition persists across the
+// 10-minute alarm while the user browses, so gate it too.
+const NEW_DOMAINS_COOLDOWN_MS = 1800000
 let lastTabSpikeTime = 0
+let lastNewDomainsAlert = 0
+// The 10-minute alarm re-ran this check all hour long — one alert per
+// unusual hour is the signal, not one per scan.
+let lastUnusualHourReported = -1
 
 async function getProfile(): Promise<BrowsingProfile> {
   const result = await chrome.storage.local.get(PROFILE_KEY)
   if (result[PROFILE_KEY]) return result[PROFILE_KEY] as BrowsingProfile
   const fresh: BrowsingProfile = {
-    hourlyActivity: new Array(24).fill(0) as number[],
     domainsVisited: {},
     tabCountHistory: [],
     activeHours: [],
@@ -40,29 +44,33 @@ async function saveProfile(profile: BrowsingProfile): Promise<void> {
 }
 
 let tabCount = 0
+// Serialize profile read-modify-write: many tabs navigating at once used to
+// interleave getProfile → mutate → saveProfile and lose updates.
+let profileQueue: Promise<unknown> = Promise.resolve()
 
 export function tabCreatedHandler(): void { tabCount++ }
 
 export function tabRemovedHandler(): void { tabCount = Math.max(0, tabCount - 1) }
 
-export function tabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab): void {
-  if (!changeInfo.url && !tab.url) return
+export function tabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo, _tab: chrome.tabs.Tab): void {
+  // Only a URL change is a navigation — status/title/favIconUrl updates fire
+  // with the same tab.url and used to inflate visit counters ~3x.
+  if (!changeInfo.url) return
   try {
-    const url = changeInfo.url || tab.url || ''
+    const url = changeInfo.url
     if (!url || url.startsWith('chrome')) return
     const domain = new URL(url).hostname
     const hour = new Date().getHours()
-    getProfile().then(profile => {
-      profile.hourlyActivity[hour]++
+    profileQueue = profileQueue.then(async () => {
+      const profile = await getProfile()
       if (!profile.domainsVisited[domain]) {
-        profile.domainsVisited[domain] = { count: 0, firstSeen: Date.now(), lastSeen: Date.now(), typicalHours: [] }
+        profile.domainsVisited[domain] = { count: 0, firstSeen: Date.now(), lastSeen: Date.now() }
       }
       const d = profile.domainsVisited[domain]
       d.count++
       d.lastSeen = Date.now()
-      if (!d.typicalHours.includes(hour)) d.typicalHours.push(hour)
       if (!profile.activeHours.includes(hour)) profile.activeHours.push(hour)
-      saveProfile(profile)
+      await saveProfile(profile)
     }).catch(() => {})
   } catch {}
 }
@@ -82,24 +90,38 @@ function pruneProfile(profile: BrowsingProfile): void {
       delete profile.domainsVisited[domain]
     }
   }
-  profile.tabCountHistory = profile.tabCountHistory.slice(-200)
 }
 
 export async function detectAnomalies(): Promise<void> {
   try {
-    const profile = await getProfile()
-    pruneProfile(profile)
+    // Re-query: tabCreated/Removed events are missed while the service
+    // worker was suspended, so the running counter drifts.
+    const openTabs = await chrome.tabs.query({}).then(tabs => tabs.length).catch(() => tabCount)
+    tabCount = openTabs
 
     const hour = new Date().getHours()
     const scores: AnomalyScore[] = []
     const anomalies: RiskEvent[] = []
 
-    profile.tabCountHistory.push(tabCount)
-    if (profile.tabCountHistory.length > 20) profile.tabCountHistory.shift()
+    // Read-mutate-save under the same queue as tabUpdatedHandler — an
+    // unqueued writer here saved a stale copy over the profile and dropped
+    // the activity samples the tab handler had just recorded.
+    const task = profileQueue.then(async () => {
+      const profile = await getProfile()
+      pruneProfile(profile)
+      profile.tabCountHistory.push(tabCount)
+      if (profile.tabCountHistory.length > 20) profile.tabCountHistory.shift()
+      await saveProfile(profile)
+      return profile
+    })
+    profileQueue = task.catch(() => {})
+    const profile = await task.catch(() => null)
+    if (!profile) return
 
     const hasSufficientData = profile.activeHours.length >= 3 && profile.tabCountHistory.length >= 10
 
-    if (profile.activeHours.length > 0 && !profile.activeHours.includes(hour) && hasSufficientData) {
+    if (profile.activeHours.length > 0 && !profile.activeHours.includes(hour) && hasSufficientData && hour !== lastUnusualHourReported) {
+      lastUnusualHourReported = hour
       scores.push({ metric: 'unusual_hour', value: hour, baseline: profile.activeHours[0], deviation: 1, severity: 'low' })
       anomalies.push({
         id: crypto.randomUUID(), type: 'anomaly_detected', category: 'device', severity: 'low',
@@ -125,7 +147,9 @@ export async function detectAnomalies(): Promise<void> {
     }
 
     const recentNewDomains = Object.values(profile.domainsVisited).filter(d => Date.now() - d.firstSeen < 60000).length
-    if (recentNewDomains > 5 && hasSufficientData) {
+    const now = Date.now()
+    if (recentNewDomains > 5 && hasSufficientData && now - lastNewDomainsAlert > NEW_DOMAINS_COOLDOWN_MS) {
+      lastNewDomainsAlert = now
       scores.push({ metric: 'new_domains_burst', value: recentNewDomains, baseline: 0, deviation: recentNewDomains, severity: 'medium' })
       anomalies.push({
         id: crypto.randomUUID(), type: 'anomaly_detected', category: 'device', severity: 'medium',
@@ -136,10 +160,11 @@ export async function detectAnomalies(): Promise<void> {
 
     if (scores.length === 0) return
 
-    const state = await getSecurityState()
-    const existing = [...(state.anomalyScores || [])]
-    existing.unshift(...scores)
-    await updateSecurityState({ anomalyScores: existing.slice(0, 50) })
+    // Write under the storage mutex — a whole-array replace from outside it
+    // dropped scores rows when the alarm overlapped another writer.
+    await mutateSecurityState(state => {
+      state.anomalyScores = [...scores, ...(state.anomalyScores || [])].slice(0, 50)
+    })
 
     for (const evt of anomalies) {
       await addCategoryEvent('device', evt)

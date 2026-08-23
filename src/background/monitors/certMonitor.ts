@@ -1,5 +1,6 @@
+import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, CertAnomaly } from '../../types'
-import { addCategoryEvent, getSecurityState, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSettings, mutateSecurityState, hasRecentCategoryEvent } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 const HIGH_VALUE_DOMAINS = [
@@ -19,7 +20,36 @@ interface CrtshEntry {
 }
 
 const certCooldowns = new Map<string, number>()
+
+export function resetAuditCaches(): void {
+  certCooldowns.clear()
+}
 const CERT_COOLDOWN_MS = 300000
+// Serialize result-list writes — concurrent checks for different domains
+// read the same list and dropped each other's entries.
+
+function isTimeoutError(e: unknown): boolean {
+  return e instanceof DOMException
+    ? e.name === 'TimeoutError'
+    : /timed? ?out/i.test(String(e))
+}
+
+async function fetchCrtSh(domain: string): Promise<Response | null> {
+  const url = `https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fetch(url, { signal: timeoutSignal(15000) })
+    } catch (e) {
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, (attempt + 1) * 2000))
+        continue
+      }
+      if (!isTimeoutError(e)) console.error('crt.sh fetch failed:', e)
+      return null
+    }
+  }
+  return null
+}
 
 export async function checkCert(domain: string): Promise<void> {
   const lastCheck = certCooldowns.get(domain)
@@ -32,10 +62,8 @@ export async function checkCert(domain: string): Promise<void> {
   }
 
   try {
-    const resp = await fetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
-      signal: AbortSignal.timeout(15000),
-    })
-    if (!resp.ok) return
+    const resp = await fetchCrtSh(domain)
+    if (!resp || !resp.ok) return
 
     const raw = await resp.json()
     const entries: CrtshEntry[] = Array.isArray(raw) ? raw : []
@@ -54,11 +82,20 @@ export async function checkCert(domain: string): Promise<void> {
       severity: daysAgo <= 7 ? 'high' : 'low',
     }
 
-    const state = await getSecurityState()
-    const anomalies = [anomaly, ...(state.certAnomalies || [])].slice(0, 50)
-    await updateSecurityState({ certAnomalies: anomalies })
+    // Atomic append inside the storage write queue — the crt.sh fetch window
+    // is long, and a whole-array replace computed before a CLEAR_ALL_DATA
+    // would otherwise resurrect wiped entries when it finally lands.
+    await mutateSecurityState(s => {
+      s.certAnomalies = [anomaly, ...(s.certAnomalies || [])].slice(0, 50)
+    })
 
-    if (daysAgo <= 7 && HIGH_VALUE_DOMAINS.some(d => domain === d || domain.endsWith('.' + d))) {
+    // Only alert when the domain has never had a cert before (new issuance),
+    // not for routine renewals of long-standing certificates.
+    const hasPriorCert = entries.some(e => {
+      const t = new Date(e.not_before).getTime()
+      return isFinite(t) && t < now - 30 * 86400000
+    })
+    if (daysAgo <= 7 && !hasPriorCert && HIGH_VALUE_DOMAINS.some(d => domain === d || domain.endsWith('.' + d))) {
       const event: RiskEvent = {
         id: crypto.randomUUID(),
         type: 'cert_anomaly',
@@ -70,20 +107,27 @@ export async function checkCert(domain: string): Promise<void> {
         timestamp: Date.now(),
         acknowledged: false,
       }
-      await addCategoryEvent('network', event)
-      await recalculateCategoryScore('network')
+      const exists = await hasRecentCategoryEvent('network', e => e.type === 'cert_anomaly' && e.source === domain, 12 * 3600000)
+      if (!exists) {
+        await addCategoryEvent('network', event)
+        await recalculateCategoryScore('network')
+      }
     }
   } catch (e) {
-    console.error('Cert check failed:', e instanceof Error ? `${e.name}: ${e.message}` : String(e))
+    if (!isTimeoutError(e)) console.error('Cert check failed:', e instanceof Error ? `${e.name}: ${e.message}` : String(e))
   }
 }
 
 export function certTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab): void {
   if (changeInfo.url && tab.url) {
-    try {
-      const domain = new URL(tab.url).hostname
-      checkCert(domain)
-    } catch {}
+    const url = tab.url
+    getSettings().then(s => {
+      if (!s.monitorCertificates) return
+      try {
+        const domain = new URL(url).hostname
+        checkCert(domain)
+      } catch {}
+    }).catch(() => {})
   }
 }
 

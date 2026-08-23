@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "SilentGuard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Monitor browser security risks and protect your online accounts",
-  "minimum_chrome_version": "92",
+  "minimum_chrome_version": "111",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
@@ -14,14 +14,23 @@
     "cookies",
     "management",
     "webRequest",
-    "tabs",
-    "browsingData"
+    "declarativeNetRequest",
+    "browsingData",
+    "contextMenus",
+    "downloads",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "panic": {
+      "suggested_key": { "default": "Ctrl+Shift+9" },
+      "description": "Trigger panic mode"
+    }
   },
   "action": {
     "default_popup": "popup.html",
@@ -32,13 +41,13 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
+      "run_at": "document_start"
+    },
     {
-      "resources": ["sensor-hooks.js"],
-      "matches": ["<all_urls>"]
+      "matches": ["<all_urls>"],
+      "js": ["page-hooks.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "icons": {

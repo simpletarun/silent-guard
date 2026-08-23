@@ -1,23 +1,16 @@
-export type SecurityCategory = 'overview' | 'network' | 'device' | 'extensions' | 'passwords' | 'privacy' | 'accounts'
+import type { PolicyReport, PolicyLink } from './policy'
+
+export * from './policy'
+
+export type SecurityCategory = 'overview' | 'network' | 'device' | 'extensions' | 'passwords' | 'privacy' | 'accounts' | 'policy'
 
 export type RiskEventType =
   | 'cookie_change'
   | 'extension_installed'
-  | 'permission_change'
-  | 'fingerprint_change'
-  | 'security_setting_change'
   | 'network_change'
   | 'login_activity'
   | 'ip_change'
-  | 'vpn_detected'
-  | 'weak_password'
-  | 'tracker_detected'
-  | 'storage_audit'
   | 'account_breach'
-  | 'browser_outdated'
-  | 'form_on_http'
-  | 'third_party_cookies'
-  | 'new_device'
   | 'session_expiry'
   | 'sensor_access'
   | 'phishing_detected'
@@ -29,8 +22,11 @@ export type RiskEventType =
   | 'threat_intel_match'
   | 'anomaly_detected'
   | 'correlated_incident'
-  | 'dark_web_mention'
   | 'forensic_snapshot'
+  | 'policy_risk'
+  | 'suspicious_download'
+  | 'panic_triggered'
+  | 'panic_recovered'
 
 export interface SensorUsage {
   api: string
@@ -46,6 +42,18 @@ export interface PhishingResult {
   confidence: number
   source: string
   checkedAt: number
+}
+
+export interface DownloadScanResult {
+  id: string
+  downloadId?: number
+  fileName: string
+  url: string
+  domain: string
+  extension: string
+  riskLevel: 'low' | 'medium' | 'high' | 'critical'
+  reason: string
+  timestamp: number
 }
 
 export interface PasswordStrengthResult {
@@ -74,7 +82,9 @@ export interface DnsCheckResult {
 
 export interface SecurityHeadersReport {
   url: string
+  auditedAt?: number
   hasHsts: boolean
+  hstsApplicable?: boolean // false over plain http — HSTS cannot exist there
   hasCsp: boolean
   hasXfo: boolean
   hasXssProtection: boolean
@@ -107,6 +117,7 @@ export interface CorrelatedIncident {
   description: string
   probability: number
   events: string[]
+  domains: string[]
   suggestedAction: string
   timestamp: number
   acknowledged: boolean
@@ -120,7 +131,14 @@ export interface ForensicSnapshot {
   extensions: { id: string; name: string; enabled: boolean }[]
   cookies: { domain: string; name: string; secure: boolean }[]
   networkState: { publicIp: string; isVpn: boolean }
-  fingerprint: BrowserFingerprint | null
+  screenshots?: string[]
+}
+
+export interface PanicState {
+  active: boolean
+  startedAt: number
+  snapshotId: string
+  lockdownUntil: number
 }
 
 export interface SecurityTimelineEntry {
@@ -186,16 +204,6 @@ export interface CategoryAction {
   severity?: 'default' | 'primary' | 'danger'
 }
 
-export interface CategorySetting {
-  id: string
-  label: string
-  description: string
-  type: 'toggle' | 'select' | 'button'
-  value: boolean | string
-  options?: { label: string; value: string }[]
-  action?: string
-}
-
 export interface CategoryState {
   id: SecurityCategory
   label: string
@@ -209,21 +217,6 @@ export interface CategoryState {
   lastScan: number
 }
 
-export interface BrowserFingerprint {
-  screenWidth: number
-  screenHeight: number
-  colorDepth: number
-  timezone: string
-  language: string
-  platform: string
-  userAgent: string
-  hardwareConcurrency: number
-  deviceMemory?: number
-  browserName?: string
-  browserVersion?: string
-  osName?: string
-}
-
 export interface DangerousExtension {
   id: string
   name: string
@@ -232,10 +225,14 @@ export interface DangerousExtension {
   canAccessAllUrls: boolean
   canReadCookies: boolean
   canUseWebRequest: boolean
+  reason?: string[]
   version?: string
   updateTime?: number
   isWhitelisted?: boolean
+  enabled?: boolean
 }
+
+export type AccountAuthRole = 'login' | 'signup'
 
 export interface AccountSite {
   domain: string
@@ -247,6 +244,9 @@ export interface AccountSite {
   hasSession?: boolean
   sessionAge?: number
   breachCount?: number
+  role?: AccountAuthRole
+  lastAuthAt?: number
+  lastActive?: number
 }
 
 export interface NetworkInfo {
@@ -257,7 +257,6 @@ export interface NetworkInfo {
   isVpn: boolean
   isProxy: boolean
   isTor: boolean
-  isDoHEnabled: boolean
   lastChecked: number
   ipHistory: { ip: string; timestamp: number }[]
 }
@@ -284,19 +283,11 @@ export interface PageScanResult {
   domain: string
   scannedAt: number
   trackers: TrackerFinding[]
-  fingerprintingAttempts: number
   canvasAttempts: number
   audioAttempts: number
-  hasTrackingPixels: boolean
-  hasHiddenIframes: boolean
-  hiddenElements: number
-  beaconCalls: number
-  suspiciousInlineScripts: number
   webRTCLeakDetected: boolean
   thirdPartyRequests: number
   totalCookies: number
-  localStorageItems: number
-  sessionStorageItems: number
 }
 
 export interface SecurityState {
@@ -304,15 +295,12 @@ export interface SecurityState {
   accounts: AccountSite[]
   dismissedAccounts: string[]
   dangerousExtensions: DangerousExtension[]
-  fingerprint: BrowserFingerprint | null
+  installedExtensions: DangerousExtension[]
   network: NetworkInfo | null
   pageScans: PageScanResult[]
-
-  httpsSites: number
-  totalSites: number
-  lastFullScan: number
   sensorUsage: SensorUsage[]
   phishingResults: PhishingResult[]
+  downloadScans: DownloadScanResult[]
   passwordStrengths: PasswordStrengthResult[]
   certAnomalies: CertAnomaly[]
   dnsChecks: DnsCheckResult[]
@@ -320,9 +308,18 @@ export interface SecurityState {
   threatIntelMatches: ThreatIntelMatch[]
   anomalyScores: AnomalyScore[]
   correlatedIncidents: CorrelatedIncident[]
+  // Event ids already cited by a correlated incident — persists beyond the
+  // 20-incident cap so truncation cannot re-trigger the same incident.
+  correlatedEventIds: string[]
   forensicSnapshots: ForensicSnapshot[]
+  panicState: PanicState
   timeline: SecurityTimelineEntry[]
   weeklyDigests: WeeklyDigest[]
+  policyReports: PolicyReport[]
+  lastPolicyHash: string
+  // URLs probed by the last common-path sweep — lets the popup show "we
+  // checked these N locations" when no policy was found.
+  lastPolicyProbes: string[]
 }
 
 export interface StorageData {
@@ -335,14 +332,11 @@ export interface GlobalSettings {
   notificationsEnabled: boolean
   autoScanExtensions: boolean
   monitorCookies: boolean
-  monitorFingerprint: boolean
   monitorNetwork: boolean
   monitorPasswords: boolean
   monitorPrivacy: boolean
-  darkMode: boolean
   onlyHighRiskAlerts: boolean
   extensionWhitelist: string[]
-  trackerBlocklist: string[]
   monitorPhishing: boolean
   monitorPasswordStrength: boolean
   monitorSessionHijack: boolean
@@ -352,26 +346,24 @@ export interface GlobalSettings {
   monitorThreatIntel: boolean
   monitorAnomaly: boolean
   monitorCorrelation: boolean
-  monitorDarkWeb: boolean
   autoKillSessions: boolean
   autoRotateCredentials: boolean
-  networkIsolation: boolean
   forensicSnapshots: boolean
   weeklyDigest: boolean
+  monitorPolicy: boolean
+  autoBlockDownloads: boolean
+  debugMode: boolean
 }
 
 export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   notificationsEnabled: true,
   autoScanExtensions: true,
   monitorCookies: true,
-  monitorFingerprint: true,
   monitorNetwork: true,
   monitorPasswords: true,
   monitorPrivacy: true,
-  darkMode: true,
   onlyHighRiskAlerts: true,
   extensionWhitelist: [],
-  trackerBlocklist: [],
   monitorPhishing: true,
   monitorPasswordStrength: true,
   monitorSessionHijack: true,
@@ -381,57 +373,41 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   monitorThreatIntel: true,
   monitorAnomaly: true,
   monitorCorrelation: true,
-  monitorDarkWeb: true,
   autoKillSessions: false,
   autoRotateCredentials: false,
-  networkIsolation: false,
   forensicSnapshots: true,
   weeklyDigest: true,
+  monitorPolicy: true,
+  autoBlockDownloads: false,
+  debugMode: false,
 }
 
-export const FINGERPRINT_CHANGE_THRESHOLD_MS = 5000
-
-export const HIGH_RISK_PERMISSIONS = [
-  '<all_urls>',
-  'cookies',
-  'webRequest',
-  'tabs',
-  'scripting',
-  'history',
-  'clipboardRead',
-  'debugger',
-  'nativeMessaging',
-]
-
-
-
 export type BackgroundMessage =
+  | { type: 'PING' }
   | { type: 'GET_STATE' }
-  | { type: 'GET_CATEGORY'; category: SecurityCategory }
-  | { type: 'GET_OVERALL_SCORE' }
-  | { type: 'FINGERPRINT_REPORT'; fingerprint: BrowserFingerprint }
   | { type: 'ADD_EVENT'; category: SecurityCategory; event: RiskEvent }
   | { type: 'ACKNOWLEDGE_EVENT'; eventId: string }
-  | { type: 'CLEAR_EVENTS' }
+  | { type: 'CLEAR_ALL_DATA' }
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<GlobalSettings> }
-  | { type: 'HTTPS_UPDATE'; isHttps: boolean }
   | { type: 'SCAN_EXTENSIONS' }
-  | { type: 'CHECK_IP' }
   | { type: 'PAGE_SCAN_RESULT'; result: PageScanResult }
   | { type: 'ADD_ACCOUNT'; domain: string; name: string }
   | { type: 'REMOVE_ACCOUNT'; domain: string }
   | { type: 'SENSOR_USAGE'; data: { api: string; details?: string; url: string; timestamp: number } }
-  | { type: 'REMOVE_EXTENSION'; extensionId: string }
-  | { type: 'PHISHING_CHECK'; url: string }
-  | { type: 'HEADERS_AUDIT'; url: string; headers: { name: string; value?: string }[] }
-  | { type: 'FORENSIC_SNAPSHOT'; trigger: string }
-  | { type: 'KILL_SESSIONS'; domains: string[] }
-  | { type: 'ISOLATE_NETWORK' }
   | { type: 'POPUP_OPENED' }
   | { type: 'PASSWORD_FORM_DETECTED'; url?: string; hasPasswordField?: boolean; isOverHttp?: boolean; formAction?: string; autocomplete?: string }
-  | { type: 'VERIFY_ACCOUNT'; domain: string }
-  | { type: 'CHECK_ALL_ACCOUNTS' }
+  | { type: 'ACCOUNT_AUTH_DETECTED'; domain: string; role: AccountAuthRole }
+  | { type: 'ACCOUNT_LOGGED_IN'; domain: string; role?: AccountAuthRole }
+  | { type: 'ACCOUNT_LOGIN_FAILED'; domain: string }
+  | { type: 'POLICY_LINKS_FOUND'; domain: string; links: PolicyLink[] }
+  | { type: 'POLICY_TEXT'; url: string; text: string; source: 'dom'; siteDomain?: string }
+  | { type: 'POLICY_TEXT'; url: string; text: string; source: 'probe'; probed?: string[]; siteDomain?: string }
+  | { type: 'ANALYZE_POLICY'; domain: string; policyUrl?: string }
+  | { type: 'GET_POLICY_REPORTS' }
+  | { type: 'GET_POLICY_REPORT'; domain: string }
+  | { type: 'PANIC' }
+  | { type: 'PANIC_RECOVER' }
 
 export function sanitizeForDisplay(input: string | null | undefined, maxLen: number = 250): string {
   if (!input) return ''
@@ -447,6 +423,7 @@ export function createCategoryConfig(id: SecurityCategory): CategoryState {
     passwords: { label: 'Passwords', icon: '🔑' },
     privacy: { label: 'Privacy', icon: '🛡️' },
     accounts: { label: 'Accounts', icon: '👤' },
+    policy: { label: 'PolicyMatrix', icon: '📜' },
   }
   const cfg = configs[id]
   return {
@@ -464,7 +441,7 @@ export function createCategoryConfig(id: SecurityCategory): CategoryState {
 }
 
 export function createInitialState(): SecurityState {
-  const categoryIds: SecurityCategory[] = ['overview', 'network', 'device', 'extensions', 'passwords', 'privacy', 'accounts']
+  const categoryIds: SecurityCategory[] = ['overview', 'network', 'device', 'extensions', 'passwords', 'privacy', 'accounts', 'policy']
   const categories: Record<string, CategoryState> = {}
   for (const id of categoryIds) {
     categories[id] = createCategoryConfig(id)
@@ -474,15 +451,13 @@ export function createInitialState(): SecurityState {
     accounts: [],
     dismissedAccounts: [],
     dangerousExtensions: [],
-    fingerprint: null,
+    installedExtensions: [],
     network: null,
     pageScans: [],
 
-    httpsSites: 0,
-    totalSites: 0,
-    lastFullScan: 0,
     sensorUsage: [],
     phishingResults: [],
+    downloadScans: [],
     passwordStrengths: [],
     certAnomalies: [],
     dnsChecks: [],
@@ -490,8 +465,13 @@ export function createInitialState(): SecurityState {
     threatIntelMatches: [],
     anomalyScores: [],
     correlatedIncidents: [],
+    correlatedEventIds: [],
     forensicSnapshots: [],
+    panicState: { active: false, startedAt: 0, snapshotId: '', lockdownUntil: 0 },
     timeline: [],
     weeklyDigests: [],
+    policyReports: [],
+    lastPolicyHash: '',
+    lastPolicyProbes: [],
   }
 }

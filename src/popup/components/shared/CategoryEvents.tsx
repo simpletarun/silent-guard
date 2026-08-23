@@ -6,6 +6,8 @@ interface Props {
   onAcknowledge?: (id: string) => void
   maxItems?: number
   compact?: boolean
+  hint?: string
+  lastScan?: number
 }
 
 function formatTime(ts: number): string {
@@ -26,7 +28,7 @@ const severityConfig: Record<string, { icon: string; label: string }> = {
   critical: { icon: '🔴', label: 'Critical' },
 }
 
-export default function CategoryEvents({ events, onAcknowledge, maxItems = 10, compact = false }: Props) {
+export default function CategoryEvents({ events, onAcknowledge, maxItems = 10, compact = false, hint, lastScan }: Props) {
   const display = events.slice(0, maxItems)
 
   if (display.length === 0) {
@@ -34,6 +36,8 @@ export default function CategoryEvents({ events, onAcknowledge, maxItems = 10, c
       <div className="cat-events-empty">
         <div className="cat-events-clean-icon">✓</div>
         <p className="cat-events-clean">No recent events</p>
+        {hint && <p className="cat-events-hint">{hint}</p>}
+        {!!lastScan && <p className="cat-events-lastscan">Last checked {formatTime(lastScan)}</p>}
       </div>
     )
   }
@@ -83,6 +87,8 @@ export default function CategoryEvents({ events, onAcknowledge, maxItems = 10, c
           font-size: 14px; font-weight: 700;
         }
         .cat-events-clean { font-size: 11px; color: var(--text-muted); font-weight: 500; margin: 0; }
+        .cat-events-hint { font-size: 9px; color: var(--text-muted); line-height: 1.4; margin: 0; max-width: 240px; }
+        .cat-events-lastscan { font-size: 8px; color: var(--text-muted); opacity: 0.7; margin: 0; }
         .cat-event-item {
           display: flex; gap: 10px; align-items: flex-start;
           background: var(--bg-surface); border: 1px solid var(--border);

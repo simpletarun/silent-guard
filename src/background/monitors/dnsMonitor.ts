@@ -1,5 +1,6 @@
+import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, DnsCheckResult } from '../../types'
-import { addCategoryEvent, getSecurityState, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSettings, mutateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 const RESOLVERS = [
@@ -9,12 +10,20 @@ const RESOLVERS = [
 ]
 
 const dnsCache: Map<string, { result: DnsCheckResult; cachedAt: number }> = new Map()
-const DNS_CACHE_MAX = 200
 
-async function queryResolver(name: string, url: string): Promise<string[]> {
+export function resetAuditCaches(): void {
+  // inFlight promises are transient — clearing them would orphan callbacks.
+  dnsCache.clear()
+}
+const DNS_CACHE_MAX = 200
+const inFlight = new Map<string, Promise<void>>()
+// Serialize result-list writes — concurrent checks for different domains
+// read the same list and dropped each other's entries.
+
+async function queryResolver(_name: string, url: string): Promise<string[]> {
   try {
     const headers: Record<string, string> = { accept: 'application/dns-json' }
-    const resp = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
+    const resp = await fetch(url, { headers, signal: timeoutSignal(5000) })
     if (!resp.ok) return []
     const data = await resp.json()
     const answers = data.Answer || data.answer || []
@@ -27,7 +36,15 @@ async function queryResolver(name: string, url: string): Promise<string[]> {
   }
 }
 
-export async function checkDns(domain: string): Promise<void> {
+export function checkDns(domain: string): Promise<void> {
+  const pending = inFlight.get(domain)
+  if (pending) return pending
+  const p = doCheck(domain)
+  inFlight.set(domain, p)
+  return p
+}
+
+async function doCheck(domain: string): Promise<void> {
   try {
     const cached = dnsCache.get(domain)
     if (cached && Date.now() - cached.cachedAt < 300000) return
@@ -41,43 +58,56 @@ export async function checkDns(domain: string): Promise<void> {
       matched: true,
     }))
 
-    const allIps = [...new Set(results.flat())]
-    const isConsistent = resolverResults.every(r => r.ips.length > 0) &&
-      resolverResults.slice(1).every(r =>
-        r.ips.length === resolverResults[0].ips.length &&
-        r.ips.every(ip => resolverResults[0].ips.includes(ip))
-      )
+    const withResults = resolverResults.filter(r => r.ips.length > 0)
+    // Fewer than 2 resolvers answering is a resolver outage, not evidence of
+    // poisoning. Geo-DNS / round-robin legitimately return different-but-
+    // overlapping sets per resolver — that is NOT poisoning either. Only a
+    // total disagreement (every pair of answer sets shares zero IPs) is.
+    const isConsistent = withResults.length < 2 || withResults.some((a, i) =>
+      withResults.some((b, j) => i !== j && a.ips.some(ip => b.ips.includes(ip)))
+    )
 
     for (const r of resolverResults) {
-      r.matched = isConsistent || r.ips.some(ip => resolverResults[0].ips.includes(ip))
+      r.matched = withResults.length === 0 || r.ips.some(ip => withResults[0].ips.includes(ip))
     }
 
     const result: DnsCheckResult = {
       domain,
-      expectedIps: allIps,
+      expectedIps: [...new Set(results.flat())],
       resolverResults,
       isConsistent,
       checkedAt: Date.now(),
     }
 
-    if (dnsCache.size >= DNS_CACHE_MAX) {
-      const oldest = dnsCache.entries().next().value
-      if (oldest) dnsCache.delete(oldest[0])
+    // Only cache a check that actually got answers — a full outage should
+    // be retried on the next visit, not suppressed for 5 minutes.
+    if (results.some(r => r.length > 0)) {
+      if (dnsCache.size >= DNS_CACHE_MAX) {
+        const oldest = dnsCache.entries().next().value
+        if (oldest) dnsCache.delete(oldest[0])
+      }
+      dnsCache.set(domain, { result, cachedAt: Date.now() })
     }
-    dnsCache.set(domain, { result, cachedAt: Date.now() })
 
-    const existing = (await getSecurityState()).dnsChecks || []
-    const checks = [result, ...existing].slice(0, 50)
-    await updateSecurityState({ dnsChecks: checks })
+    // Atomic append inside the storage write queue — a read-then-replace
+    // here let a check computed during a long DoH window resurrect wiped
+    // data if CLEAR_ALL_DATA landed in between.
+    await mutateSecurityState(s => {
+      s.dnsChecks = [result, ...(s.dnsChecks || [])].slice(0, 50)
+    })
 
     if (!isConsistent) {
+      const describe = (name: string) => {
+        const r = resolverResults.find(x => x.resolver === name)
+        return r && r.ips.length > 0 ? r.ips.join(', ') : 'no answer'
+      }
       const event: RiskEvent = {
         id: crypto.randomUUID(),
         type: 'dns_poison',
         category: 'network',
         severity: 'high',
         title: `DNS inconsistency detected for ${domain}`,
-        description: `Resolvers returned different IPs: ${resolverResults.map(r => `${r.resolver}=[${r.ips.join(',')}]`).join(', ')}`,
+        description: `Resolvers disagree — Cloudflare → ${describe('cloudflare')}, Google → ${describe('google')}, doh.li → ${describe('dohli')}`,
         source: domain,
         timestamp: Date.now(),
         acknowledged: false,
@@ -87,15 +117,27 @@ export async function checkDns(domain: string): Promise<void> {
     }
   } catch (e) {
     console.error('DNS check failed:', e)
+  } finally {
+    inFlight.delete(domain)
   }
 }
 
 export function dnsTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab): void {
   if (changeInfo.url && tab.url) {
-    try {
-      const domain = new URL(tab.url).hostname
-      checkDns(domain)
-    } catch {}
+    const url = tab.url
+    // chrome://newtab / about:blank yield hostnames "newtab"/"blank" — never
+    // query DoH servers with garbage names.
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return
+    getSettings().then(s => {
+      if (!s.monitorDns) return
+      try {
+        const domain = new URL(url).hostname
+        // Dot-less names (localhost, dev boxes) are not public DNS — querying
+        // public resolvers for them is junk traffic and always NXDOMAIN.
+        if (!domain.includes('.')) return
+        checkDns(domain).catch(() => {})
+      } catch {}
+    }).catch(() => {})
   }
 }
 

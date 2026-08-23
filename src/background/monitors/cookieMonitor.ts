@@ -1,19 +1,25 @@
 import { RiskEvent } from '../../types'
-import { addCategoryEvent } from '../storage'
+import { addCategoryEvent, getSettings } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
-const COOKIE_KEYWORDS = ['session', 'token', 'auth', 'sid', 'jwt', 'refresh', 'access_token', 'login']
+const DOMAIN_COOLDOWN_MS = 60000
+export const COOKIE_NAME_RE = /^([a-z0-9]*[._-])?(phpsessid|sessionid|sessid|session|sid|token|auth|login|logged_in|jwt|refresh|access_token)([._-].*)?$/i
 let lastCookieRecalc = 0
 const domainCooldowns = new Map<string, number>()
-const DOMAIN_COOLDOWN_MS = 60000
+
+export function resetAuditCaches(): void {
+  domainCooldowns.clear()
+  lastCookieRecalc = 0
+}
 
 function isAuthCookie(name: string): boolean {
-  return COOKIE_KEYWORDS.some(k => name.toLowerCase().includes(k))
+  // Anchored token match — "residence_id" or "loginwall_timestamp" contain
+  // the substrings "sid"/"login" but are not auth cookies.
+  return COOKIE_NAME_RE.test(name.trim())
 }
 
 function getCookieRiskLevel(
   cookieName: string,
-  domain: string,
   isSecure: boolean,
   sameSite?: chrome.cookies.SameSiteStatus
 ): 'low' | 'medium' | 'high' {
@@ -29,44 +35,61 @@ export async function cookieChangeHandler(changeInfo: {
   cause: string
   removed: boolean
 }): Promise<void> {
-  const { cookie, cause, removed } = changeInfo
-  if (!isAuthCookie(cookie.name)) return
+  try {
+    const settings = await getSettings()
+    if (!settings.monitorCookies) return
+    const { cookie, cause, removed } = changeInfo
+    if (!isAuthCookie(cookie.name)) return
 
-  const now = Date.now()
-  const lastEvent = domainCooldowns.get(cookie.domain)
-  if (lastEvent && now - lastEvent < DOMAIN_COOLDOWN_MS) return
-  domainCooldowns.set(cookie.domain, now)
-  if (domainCooldowns.size > 100) {
-    const oldest = [...domainCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
-    if (oldest) domainCooldowns.delete(oldest[0])
-  }
+    const now = Date.now()
 
-  const riskLevel = getCookieRiskLevel(cookie.name, cookie.domain, cookie.secure, cookie.sameSite)
+    // Only insert/overwrite are security signals. Expired/evicted/explicit
+    // removals are logout/normal browser churn — they fired a "low" event
+    // on every logout and buried real cookie changes.
+    if (cause !== 'insert' && cause !== 'overwrite') return
+    // A session-cookie refresh fires TWO events: removed+overwrite for the
+    // old cookie, then the real insert. The phantom removal used to claim
+    // the cooldown and log "cookie removed" on every refresh.
+    if (removed) return
 
-  const causeLabels: Record<string, string> = {
-    explicit: 'User action',
-    overwrite: 'Updated by website',
-    expired: 'Cookie expired',
-    evicted: 'Evicted by browser',
-    insert: 'New cookie set',
-  }
+    const lastEvent = domainCooldowns.get(cookie.domain)
+    if (lastEvent && now - lastEvent < DOMAIN_COOLDOWN_MS) return
+    domainCooldowns.set(cookie.domain, now)
+    if (domainCooldowns.size > 100) {
+      const oldest = [...domainCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
+      if (oldest) domainCooldowns.delete(oldest[0])
+    }
 
-  const event: RiskEvent = {
-    id: crypto.randomUUID(),
-    type: 'cookie_change',
-    category: 'accounts',
-    severity: riskLevel === 'high' ? 'high' : riskLevel === 'medium' ? 'medium' : 'low',
-    title: removed ? 'Authentication cookie removed' : 'Authentication cookie changed',
-    description: `Cookie "${cookie.name}" on ${cookie.domain} - ${causeLabels[cause] || cause}`,
-    source: cookie.domain,
-    timestamp: Date.now(),
-    acknowledged: false,
-  }
+    // A removed/overwritten cookie is scored by its own flags, not by
+    // security flags of the now-dead cookie — logouts would fire "high".
+    const severity = getCookieRiskLevel(cookie.name, cookie.secure, cookie.sameSite)
 
-  await addCategoryEvent('accounts', event)
-  if (now - lastCookieRecalc > 10000) {
-    lastCookieRecalc = now
-    await recalculateCategoryScore('accounts')
+    // Only insert/overwrite reach this point (see guard above) — expired/
+    // evicted/explicit labels are unreachable by construction.
+    const causeLabels: Record<string, string> = {
+      overwrite: 'Updated by website',
+      insert: 'New cookie set',
+    }
+
+    const event: RiskEvent = {
+      id: crypto.randomUUID(),
+      type: 'cookie_change',
+      category: 'accounts',
+      severity,
+      title: 'Authentication cookie changed',
+      description: `Cookie "${cookie.name}" on ${cookie.domain} - ${causeLabels[cause] || cause}`,
+      source: cookie.domain,
+      timestamp: Date.now(),
+      acknowledged: false,
+    }
+
+    await addCategoryEvent('accounts', event)
+    if (now - lastCookieRecalc > 10000) {
+      lastCookieRecalc = now
+      await recalculateCategoryScore('accounts')
+    }
+  } catch (e) {
+    console.error('cookieChangeHandler failed:', e)
   }
 }
 

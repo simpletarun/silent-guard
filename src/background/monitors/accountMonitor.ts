@@ -1,143 +1,185 @@
-import { RiskEvent, AccountSite } from '../../types'
-import { addAccount, addCategoryEvent, getSecurityState, loadState, saveState, updateSecurityState } from '../storage'
+import { RiskEvent, AccountSite, AccountAuthRole } from '../../types'
+import { addCategoryEvent, hasRecentCategoryEvent, mutateSecurityState, removeCategoryEvents } from '../storage'
 import { recalculateCategoryScore } from '../engine'
+import { normalizeDomain, isValidDomain, canonicalAccountDomain, inferAccountName } from '../../utils/domain'
 
-const LOGIN_COOKIE_PATTERNS = ['session', 'token', 'auth', 'login', 'logged_in', 'user_id', 'wp-login', 'wordpress_logged']
+// Verification semantics (accuracy rules):
+// - Seeing a login/signup FORM proves nothing — recordAuthFormSeen only
+//   refreshes the role hint on already-tracked accounts and never verifies.
+// - A logout control on the site or a successful password-form submit
+//   (ACCOUNT_LOGGED_IN) IS proof of a session → recordAccountAuth verifies.
+// - Manual adds stay "unverified" until real login evidence arrives.
 
-export async function detectAccountsFromCookies(): Promise<void> {
-  try {
-    const allCookies = await chrome.cookies.getAll({})
-    const domainsWithSession = new Set<string>()
-
-    for (const cookie of allCookies) {
-      const match = LOGIN_COOKIE_PATTERNS.some(p => cookie.name.toLowerCase().includes(p))
-      if (match) {
-        let domain = cookie.domain.startsWith('.') ? cookie.domain.substring(1) : cookie.domain
-        if (domain.startsWith('.')) domain = domain.substring(1)
-        domainsWithSession.add(domain)
-      }
-    }
-
-    const state = await getSecurityState()
-    const existingDomains = new Set((state.accounts || []).map(a => a.domain))
-    const dismissed = new Set(state.dismissedAccounts || [])
-
-    for (const domain of domainsWithSession) {
-      if (!existingDomains.has(domain) && !dismissed.has(domain)) {
-        const name = domain.split('.')[0]
-        const nameCapitalized = name.charAt(0).toUpperCase() + name.slice(1)
-        const account: AccountSite = {
-          domain,
-          name: nameCapitalized,
-          status: 'unverified',
-          securityUrl: `https://${domain}`,
-          lastChecked: Date.now(),
-          hasSession: true,
-        }
-        await addAccount(account)
-        verifyAccount(domain)
-
-        const event: RiskEvent = {
-          id: crypto.randomUUID(),
-          type: 'login_activity',
-          category: 'accounts',
-          severity: 'low',
-          title: `New account detected: ${nameCapitalized}`,
-          description: `Active session found for ${domain}`,
-          source: domain,
-          timestamp: Date.now(),
-          acknowledged: false,
-        }
-        await addCategoryEvent('accounts', event)
-      }
-    }
-  } catch (e) {
-    console.error('Account detection failed:', e)
-  }
+// Real security-checkup pages for major providers; everything else falls
+// back to the site root.
+const SECURITY_URLS: Record<string, string> = {
+  'google.com': 'https://myaccount.google.com/security-checkup',
+  'facebook.com': 'https://www.facebook.com/settings?tab=security',
+  'instagram.com': 'https://www.instagram.com/accounts/password/change/',
+  'github.com': 'https://github.com/settings/security',
+  'x.com': 'https://x.com/settings/account',
+  'microsoft.com': 'https://account.microsoft.com/security',
+  'apple.com': 'https://account.apple.com/account/manage',
+  'reddit.com': 'https://www.reddit.com/settings/',
+  'linkedin.com': 'https://www.linkedin.com/my-network/',
+  'amazon.com': 'https://www.amazon.com/ap/cvf',
+  'netflix.com': 'https://www.netflix.com/account/getextra',
+  'spotify.com': 'https://www.spotify.com/account/security/',
+  'discord.com': 'https://discord.com/channels/@me',
+  'tiktok.com': 'https://www.tiktok.com/profile',
+  'paypal.com': 'https://www.paypal.com/myaccount/security/',
 }
 
-export async function verifyAccount(domain: string): Promise<void> {
+function securityUrlFor(canonical: string): string {
+  return SECURITY_URLS[canonical] || `https://${canonical}`
+}
+
+// The popup debounce-refreshes on this — without it account changes only
+// appear after reopening the popup.
+function broadcastStateUpdated(): void {
+  chrome.runtime.sendMessage({ type: 'STATE_UPDATED' }).catch(() => {})
+}
+
+// Per-canonical in-memory dedupe for login_activity events (see
+// recordAccountAuth) — advisory, resets with the service worker.
+const lastAuthEventAt = new Map<string, number>()
+
+export async function recordAccountAuth(domain: string, role: AccountAuthRole): Promise<void> {
   try {
-    let state = await getSecurityState()
-    let accounts = state.accounts || []
-    let idx = accounts.findIndex(a => a.domain === domain)
-    if (idx < 0) return
+    const canonical = canonicalAccountDomain(normalizeDomain(domain))
+    if (!isValidDomain(canonical)) return
+    const now = Date.now()
 
-    const prev = accounts[idx]
-
-    const resp = await fetch(`https://${domain}`, {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(8000),
-    }).catch(() => null)
-
-    state = await getSecurityState()
-    accounts = state.accounts || []
-    idx = accounts.findIndex(a => a.domain === domain)
-    if (idx < 0) return
-
-    const updated = { ...prev }
-    if (!resp) {
-      updated.status = 'unverified'
-    } else {
-      const hsts = resp.headers.get('strict-transport-security')
-      if ((resp.status === 200 || resp.status < 400) && hsts) {
-        updated.status = 'verified'
+    // Atomic read-modify-write under the storage mutex — two tabs logging in
+    // concurrently must not lose each other's updates.
+    let account!: AccountSite
+    await mutateSecurityState(state => {
+      const accounts = state.accounts || []
+      const idx = accounts.findIndex(a => a.domain === canonical)
+      if (idx >= 0) {
+        account = { ...accounts[idx], role, lastAuthAt: now, lastActive: now, hasSession: true, status: 'verified' }
+        accounts[idx] = account
       } else {
-        updated.status = 'unverified'
+        // Real login evidence on an unknown site — track it. Also clear any
+        // stale dismissal (the user is demonstrably using this account again).
+        account = {
+          domain: canonical,
+          name: inferAccountName(canonical),
+          status: 'verified',
+          securityUrl: securityUrlFor(canonical),
+          loginActivityUrl: `https://${canonical}/account`,
+          lastChecked: now,
+          hasSession: true,
+          role,
+          lastAuthAt: now,
+          lastActive: now,
+        }
+        accounts.push(account)
       }
+      state.accounts = accounts
+      if (state.dismissedAccounts?.includes(canonical)) {
+        state.dismissedAccounts = state.dismissedAccounts.filter(d => d !== canonical)
+      }
+    })
+    broadcastStateUpdated()
+
+    const dup = await hasRecentCategoryEvent('accounts', e => e.type === 'login_activity' && e.source === canonical, 60000)
+    // Advisory second gate set synchronously: two near-simultaneous logins
+    // could both pass the storage-backed dedupe above before either's event
+    // row exists.
+    if (!dup && Date.now() - (lastAuthEventAt.get(canonical) || 0) < 60000) return
+    lastAuthEventAt.set(canonical, Date.now())
+    if (dup) return
+    const event: RiskEvent = {
+      id: crypto.randomUUID(),
+      type: 'login_activity',
+      category: 'accounts',
+      severity: 'low',
+      title: role === 'signup' ? `Account created: ${account.name}` : `Signed in to ${account.name}`,
+      description: role === 'signup' ? `New account created on ${canonical}` : `Login detected on ${canonical}`,
+      source: canonical,
+      timestamp: now,
+      acknowledged: false,
     }
-    updated.lastChecked = Date.now()
-
-    const next = [...accounts]
-    next[idx] = updated
-    await updateSecurityState({ accounts: next })
+    await addCategoryEvent('accounts', event)
     await recalculateCategoryScore('accounts')
+    broadcastStateUpdated()
   } catch (e) {
-    console.error('Account verification failed:', e)
+    console.error('recordAccountAuth failed:', e)
   }
 }
 
-export async function checkAllAccounts(): Promise<void> {
-  const state = await getSecurityState()
-  const accounts = state.accounts || []
-  for (const acc of accounts) {
-    verifyAccount(acc.domain).catch(() => {})
+// A login/signup form was SEEN on an already-tracked account. This is weak
+// evidence: never verify, never set hasSession/lastActive, never auto-add
+// unknown sites (that used to mark every visited login page as an account).
+export async function recordAuthFormSeen(domain: string, role: AccountAuthRole): Promise<void> {
+  try {
+    const canonical = canonicalAccountDomain(normalizeDomain(domain))
+    if (!isValidDomain(canonical)) return
+    await mutateSecurityState(state => {
+      const accounts = state.accounts || []
+      const idx = accounts.findIndex(a => a.domain === canonical)
+      if (idx < 0) return // unknown or dismissed site — ignore entirely
+      const acc = accounts[idx]
+      accounts[idx] = {
+        ...acc,
+        role: acc.status === 'verified' ? acc.role : role,
+        lastChecked: Date.now(),
+      }
+      state.accounts = accounts
+    })
+    broadcastStateUpdated()
+  } catch (e) {
+    console.error('recordAuthFormSeen failed:', e)
   }
 }
 
-export function startAccountMonitor(): void {
-  detectAccountsFromCookies()
-}
+export { normalizeDomain, isValidDomain } from '../../utils/domain'
 
 export async function handleAddAccount(domain: string, name: string): Promise<void> {
-  const account: AccountSite = {
-    domain,
-    name,
-    status: 'unverified',
-    securityUrl: `https://${domain}`,
-    loginActivityUrl: `https://${domain}/account`,
-    lastChecked: Date.now(),
-    hasSession: false,
+  const cleanDomain = normalizeDomain(domain)
+  if (!isValidDomain(cleanDomain)) {
+    throw new Error(`Invalid domain: "${domain}"`)
   }
-  await addAccount(account)
-  verifyAccount(domain).catch(() => {})
+  const canonical = canonicalAccountDomain(cleanDomain)
+  // Single atomic mutation: dedupe + add + clear any stale dismissal so the
+  // re-added account can be verified again later.
+  await mutateSecurityState(state => {
+    const accounts = state.accounts || []
+    if (accounts.some(a => a.domain === canonical)) return
+    accounts.push({
+      domain: canonical,
+      name,
+      status: 'unverified',
+      securityUrl: securityUrlFor(canonical),
+      loginActivityUrl: `https://${canonical}/account`,
+      lastChecked: 0, // 0 → not throttled
+      hasSession: false,
+    })
+    state.accounts = accounts
+    if (state.dismissedAccounts?.includes(canonical)) {
+      state.dismissedAccounts = state.dismissedAccounts.filter(d => d !== canonical)
+    }
+  })
   await recalculateCategoryScore('accounts')
+  broadcastStateUpdated()
 }
 
 export async function handleRemoveAccount(domain: string): Promise<void> {
-  const data = await loadState()
-  data.securityState.accounts = (data.securityState.accounts || []).filter(a => a.domain !== domain)
-  const dismissed = new Set(data.securityState.dismissedAccounts || [])
-  dismissed.add(domain)
-  data.securityState.dismissedAccounts = [...dismissed]
-  const cat = data.securityState.categories.accounts
-  if (cat && cat.events) {
-    cat.events = cat.events.filter(e => !(e.type === 'login_activity' && e.source === domain))
-    data.securityState.categories.accounts = cat
-  }
-  if (data.eventHistory) {
-    data.eventHistory = data.eventHistory.filter(e => !(e.category === 'accounts' && e.type === 'login_activity' && e.source === domain))
-  }
-  await saveState(data)
+  // Stored domains are canonicalized — canonicalize the request too, or
+  // "accounts.google.com" would fail to remove the tracked "google.com".
+  const clean = canonicalAccountDomain(normalizeDomain(domain))
+  // Atomic under the write mutex: a raw loadState/saveState here raced
+  // queued writers whenever stateCache was stale (failed save, SW restart).
+  await mutateSecurityState(state => {
+    state.accounts = (state.accounts || []).filter(a => a.domain !== clean)
+    const dismissed = new Set(state.dismissedAccounts || [])
+    dismissed.add(clean)
+    state.dismissedAccounts = [...dismissed]
+  })
+  // removeCategoryEvents clears both the category feed and eventHistory
+  // under the same mutex (SecurityState itself has no eventHistory field).
+  await removeCategoryEvents('accounts', e => e.type === 'login_activity' && e.source === clean)
   await recalculateCategoryScore('accounts')
+  broadcastStateUpdated()
 }
