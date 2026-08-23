@@ -24,14 +24,6 @@ Detects cookie theft, fingerprinting, phishing, DNS inconsistencies, and more �
 | **Extensions** | Scans installed extensions for dangerous permissions |
 
 ## 🚀 Getting Started
-
-```bash
-git clone https://github.com/simpletarun/silent-guard.git
-cd silent-guard
-npm install
-npm run build
-```
-
 ### Download
 Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, unzip, and load in your browser.
 
