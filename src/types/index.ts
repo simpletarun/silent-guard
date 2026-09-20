@@ -254,6 +254,7 @@ export interface NetworkInfo {
   isp?: string
   country?: string
   city?: string
+  asn?: string
   isVpn: boolean
   isProxy: boolean
   isTor: boolean

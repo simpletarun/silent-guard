@@ -2,6 +2,7 @@ import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, NetworkInfo } from '../../types'
 import { addCategoryEvent, updateSecurityState, getSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
+import { dbg } from '../../utils/debug'
 
 export interface ConnectionSignals {
   vpn: boolean
@@ -97,8 +98,9 @@ export async function checkPublicIp(): Promise<void> {
 
     // VPN/proxy/TOR detection - using ipwho.is (HTTPS) as primary source.
     // ipwho.is provides proxy, hosting, and ASN information.
+    // IP 171.61.27.161 appears to be a CDN/IP with limited geolocation data.
     try {
-      const whoResp = await fetch(`https://ipwho.is/${ip}?fields=status,country,city,isp,org,asn,proxy,hosting`, { signal: timeoutSignal(8000) })
+      const whoResp = await fetch(`https://ipwho.is/${ip}?fields=status,country,city,isp,org,asn,proxy,hosting`, { signal: timeoutSignal(15000) })
       if (whoResp.ok) {
         const geo = await whoResp.json()
         if (geo.success) {
@@ -109,35 +111,32 @@ export async function checkPublicIp(): Promise<void> {
           signals.hosting = geo.hosting === true
           country = country ?? geo.country
           city = city ?? geo.city
+        } else {
+          dbg('ipwho.is returned unsuccessful for', ip, geo)
         }
+      } else {
+        dbg('ipwho.is request failed for', ip, whoResp.status)
       }
-    } catch {}
-
-    if (!org) {
-      try {
-        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(8000) })
-        if (geoResp.ok) {
-          const geo = await geoResp.json()
-          org = geo.org || geo.isp
-          signals.proxy = geo.proxy === true
-          country = country ?? geo.country_name
-          city = city ?? geo.city
-        }
-      } catch {}
+    } catch (e) {
+      dbg('ipwho.is error for', ip, e)
     }
 
-    if (!org) {
+    // Fallback to ipapi.co if ISP/org still missing
+    if (!org || !isp) {
       try {
-        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(8000) })
+        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(15000) })
         if (geoResp.ok) {
           const geo = await geoResp.json()
-          isp = geo.org || geo.isp
-          org = geo.org
+          org = org || geo.org || geo.isp
+          isp = isp || geo.org || geo.isp
           signals.proxy = geo.proxy === true
           country = country ?? geo.country_name
           city = city ?? geo.city
+          dbg('ipapi.co fallback for', ip, { org: geo.org, isp: geo.isp, country: geo.country_name, city: geo.city })
         }
-      } catch {}
+      } catch (e) {
+        dbg('ipapi.co error for', ip, e)
+      }
     }
 
     const verdict = classifyConnection(org, isp, signals, asnText)
@@ -175,6 +174,7 @@ export async function checkPublicIp(): Promise<void> {
       isp,
       country,
       city,
+      asn: asnText || undefined,
       isVpn,
       isProxy,
       isTor,

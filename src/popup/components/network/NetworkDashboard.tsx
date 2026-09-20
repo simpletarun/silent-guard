@@ -27,8 +27,8 @@ export default function NetworkDashboard({ category, network }: Props) {
 
   const baseMetrics: Metric[] = cat.metrics.length > 0 ? cat.metrics : network ? [
     { label: 'Public IP', value: network.publicIp, icon: '🌐', status: 'good' as const },
-    { label: 'ISP', value: network.isp || 'Unknown', icon: '🏢', status: 'good' as const },
-    { label: 'Location', value: [network.city, network.country].filter(Boolean).join(', ') || 'Unknown', icon: '📍', status: 'good' as const },
+    { label: 'ISP', value: network.isp || (network.asn ? `AS${network.asn}` : 'Unknown'), icon: '🏢', status: 'good' as const },
+    { label: 'Location', value: [network.city, network.country].filter(Boolean).join(', ') || (network.isVpn || network.isProxy ? 'Cloud/Proxy location limited' : 'Unknown'), icon: '📍', status: 'good' as const },
   ] : [
     { label: 'Status', value: 'No data yet', icon: '⏳', status: 'warning' as const },
   ]

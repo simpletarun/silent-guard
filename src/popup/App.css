@@ -919,3 +919,27 @@ button:focus-visible {
 .acc-list-scroll::-webkit-scrollbar-track { background: var(--bg-surface); border-radius: 3px; }
 .acc-list-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .acc-list-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Extension search box */
+.ext-search-wrapper {
+  margin-bottom: 10px;
+}
+.ext-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  transition: var(--transition);
+  outline: none;
+}
+.ext-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.ext-search-input::placeholder {
+  color: var(--text-muted);
+}
