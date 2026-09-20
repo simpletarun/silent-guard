@@ -31,22 +31,6 @@ Detects cookie theft, fingerprinting, phishing, DNS inconsistencies, and more �
 | **Panic Mode** | `Ctrl+Shift+9` instantly blocks all web requests via declarativeNetRequest |
 | **Policy Analyzer** | Scores privacy policies: dangerous clauses, retention, user rights, transparency |
 
-## 🆕 What's New in 1.1.1
-
-### Security Fix: Insecure HTTP Endpoint Replaced
-**Critical security issue fixed:** The extension previously used `http://ip-api.com` for IP geolocation lookups, which created a Man-in-the-Middle (MITM) vulnerability. This has been replaced with secure HTTPS endpoints:
-
-- Primary: `https://ipwho.is` (full geo data with proxy/hosting flags)
-- Fallback: `https://ipapi.co` (IP geolocation fallback)
-
-**Impact:** All network monitoring now uses encrypted HTTPS connections for IP lookups, protecting your data from interception.
-
-### Additional Changes in 1.1.0
-- **Panic lockdown actually blocks**: rebuilt on `declarativeNetRequest` session rules (MV3 `webRequest.cancel` is a no-op) — arm, auto-expire, and recover all enforced; hotkey works from cold start
-- **Fingerprinting detection fixed**: page scans now re-run after hook activity instead of snapshotting counters before fingerprinting scripts ran
-- **Download verdicts**: Chrome's async malware flag now re-scores downloads (was swallowed by a dedupe guard); trusted-domain discount no longer overrides "dangerous" verdicts
-- **Data races eliminated**: DNS/cert/cookie/account writes moved inside the storage mutex so Clear-All-Data can't be partially resurrected
-- **Popup polish**: speed test timeouts + abort cleanup, silent failure toasts, tab scroll reset, badge colors
 
 ## 🚀 Getting Started
 
