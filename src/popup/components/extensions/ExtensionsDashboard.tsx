@@ -87,35 +87,39 @@ function hostsLabel(perms: string[]): string {
       </div>
       <div className="card">
         <div className="card-title">All Installed Extensions ({sorted.length})</div>
-        {sorted.length > 0 ? sorted.map(ext => {
-          const isFlagged = flaggedIds.has(ext.id)
-          return (
-          <div key={ext.id} className="ext-item">
-            <div className="ext-item-header">
-              <span className="ext-item-name">{ext.name}{ext.version ? ` v${ext.version}` : ''}</span>
-              <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                {ext.enabled === false && <span className="badge badge-unknown">disabled</span>}
-                <span className={`badge ${isFlagged ? `badge-${ext.riskLevel}` : 'badge-safe'}`}>{isFlagged ? ext.riskLevel : 'safe'}</span>
-              </span>
-            </div>
-            {isFlagged && ext.reason && ext.reason.length > 0 && (
-              <div className="ext-item-perms">
-                {ext.reason.map(r => <span key={r} className="ext-perm-badge">{r}</span>)}
-              </div>
-            )}
-            <div className="ext-item-raw">
-              <span className="ext-item-raw-lb">Sites:</span> {hostsLabel(ext.permissions)}
-              <br />
-              <span className="ext-item-raw-lb">Permissions:</span> {ext.permissions.filter(p => !isHostPattern(p)).join(', ') || 'none'}
-            </div>
-            {isFlagged && ext.id !== chrome.runtime.id && (
-              <button className="btn btn-danger btn-sm" onClick={() => onRemove(ext.id)}>
-                Uninstall
-              </button>
-            )}
+        {sorted.length > 0 ? (
+          <div className="ext-list">
+            {sorted.map(ext => {
+              const isFlagged = flaggedIds.has(ext.id)
+              return (
+                <div key={ext.id} className="ext-item">
+                  <div className="ext-item-header">
+                    <span className="ext-item-name">{ext.name}{ext.version ? ` v${ext.version}` : ''}</span>
+                    <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                      {ext.enabled === false && <span className="badge badge-unknown">disabled</span>}
+                      <span className={`badge ${isFlagged ? `badge-${ext.riskLevel}` : 'badge-safe'}`}>{isFlagged ? ext.riskLevel : 'safe'}</span>
+                    </span>
+                  </div>
+                  {isFlagged && ext.reason && ext.reason.length > 0 && (
+                    <div className="ext-item-perms">
+                      {ext.reason.map(r => <span key={r} className="ext-perm-badge">{r}</span>)}
+                    </div>
+                  )}
+                  <div className="ext-item-raw">
+                    <span className="ext-item-raw-lb">Sites:</span> {hostsLabel(ext.permissions)}
+                    <br />
+                    <span className="ext-item-raw-lb">Permissions:</span> {ext.permissions.filter(p => !isHostPattern(p)).join(', ') || 'none'}
+                  </div>
+                  {isFlagged && ext.id !== chrome.runtime.id && (
+                    <button className="btn btn-danger btn-sm" onClick={() => onRemove(ext.id)}>
+                      Uninstall
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
-          )
-        }) : (
+        ) : (
           <div className="cat-events-empty">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" opacity="0.3">
               <rect x="4" y="4" width="16" height="16" rx="2" stroke="var(--text-muted)" strokeWidth="1.5" />

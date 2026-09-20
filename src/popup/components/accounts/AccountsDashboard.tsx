@@ -95,31 +95,35 @@ export default function AccountsDashboard({ category, accounts, onAcknowledge, o
             </button>
           )}
         </div>
-        {filtered.length > 0 ? filtered.map(acc => (
-          <div key={acc.domain} className="acc-item">
-            <div className="acc-item-header">
-              <div className="acc-item-info">
-                <span className="acc-item-name">{acc.name}</span>
-                <span className="acc-item-domain">{acc.domain}</span>
+        {filtered.length > 0 ? (
+          <div className="acc-list-scroll">
+            {filtered.map(acc => (
+              <div key={acc.domain} className="acc-item">
+                <div className="acc-item-header">
+                  <div className="acc-item-info">
+                    <span className="acc-item-name">{acc.name}</span>
+                    <span className="acc-item-domain">{acc.domain}</span>
+                  </div>
+                  <span className={`acc-badge ${acc.status === 'verified' ? 'acc-badge-ok' : 'acc-badge-no'}`}>
+                    {acc.status === 'verified' ? '✓ verified' : 'unverified'}
+                  </span>
+                </div>
+                <div className="acc-item-actions">
+                  {acc.securityUrl && (
+                    <button className="btn btn-outline btn-sm" onClick={() => chrome.tabs.create({ url: acc.securityUrl! }).catch(() => {})}>
+                      Security
+                    </button>
+                  )}
+                  <button className="btn btn-outline btn-sm acc-remove" onClick={() => {
+                    if (window.confirm(`Remove ${acc.domain} from tracked accounts?`)) onRemoveAccount(acc.domain)
+                  }}>
+                    Remove
+                  </button>
+                </div>
               </div>
-              <span className={`acc-badge ${acc.status === 'verified' ? 'acc-badge-ok' : 'acc-badge-no'}`}>
-                {acc.status === 'verified' ? '✓ verified' : 'unverified'}
-              </span>
-            </div>
-            <div className="acc-item-actions">
-              {acc.securityUrl && (
-                <button className="btn btn-outline btn-sm" onClick={() => chrome.tabs.create({ url: acc.securityUrl! }).catch(() => {})}>
-                  Security
-                </button>
-              )}
-              <button className="btn btn-outline btn-sm acc-remove" onClick={() => {
-                if (window.confirm(`Remove ${acc.domain} from tracked accounts?`)) onRemoveAccount(acc.domain)
-              }}>
-                Remove
-              </button>
-            </div>
+            ))}
           </div>
-        )) : q ? (
+        ) : q ? (
           <div className="cat-events-empty">
             <p className="cat-events-clean">No accounts match &quot;{debouncedSearch}&quot;</p>
             <p className="cat-events-hint">Try a different name or domain.</p>
