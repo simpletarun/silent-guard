@@ -30,8 +30,8 @@ const CERT_COOLDOWN_MS = 300000
 
 function isTimeoutError(e: unknown): boolean {
   return e instanceof DOMException
-    ? e.name === 'TimeoutError'
-    : /timed? ?out/i.test(String(e))
+    ? e.name === 'TimeoutError' || e.name === 'AbortError'
+    : /timed? ?out|cancelled|abort/i.test(String(e))
 }
 
 async function fetchCrtSh(domain: string): Promise<Response | null> {
@@ -125,7 +125,7 @@ export function certTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.Ta
       if (!s.monitorCertificates) return
       try {
         const domain = new URL(url).hostname
-        checkCert(domain)
+        checkCert(domain).catch(() => {})
       } catch {}
     }).catch(() => {})
   }
