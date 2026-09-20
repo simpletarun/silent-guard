@@ -1,6 +1,6 @@
 {
   "name": "silent-guard",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Browser extension that monitors session security risks",
   "scripts": {
     "build": "webpack --mode production",
