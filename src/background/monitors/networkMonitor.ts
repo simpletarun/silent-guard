@@ -95,17 +95,16 @@ export async function checkPublicIp(): Promise<void> {
     let isTor = false
     const signals: ConnectionSignals = { vpn: false, proxy: false, tor: false, hosting: false }
 
-    // VPN/proxy/TOR detection runs unconditionally.
-    // ip-api.com free tier is the ONLY source with real proxy/hosting flags.
-    // It is HTTP-only (HTTPS returns 403), fine for a service-worker fetch.
+    // VPN/proxy/TOR detection - using ipwho.is (HTTPS) as primary source.
+    // ipwho.is provides proxy, hosting, and ASN information.
     try {
-      const fb2 = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,city,isp,org,as,asname,proxy,hosting,query`, { signal: timeoutSignal(8000) })
-      if (fb2.ok) {
-        const geo = await fb2.json()
-        if (geo.status === 'success') {
+      const whoResp = await fetch(`https://ipwho.is/${ip}?fields=status,country,city,isp,org,asn,proxy,hosting`, { signal: timeoutSignal(8000) })
+      if (whoResp.ok) {
+        const geo = await whoResp.json()
+        if (geo.success) {
           org = geo.org || geo.isp
           isp = geo.isp
-          asnText = `${geo.as || ''} ${geo.asname || ''}`
+          asnText = `${geo.asn || ''}`
           signals.proxy = geo.proxy === true
           signals.hosting = geo.hosting === true
           country = country ?? geo.country
@@ -116,16 +115,13 @@ export async function checkPublicIp(): Promise<void> {
 
     if (!org) {
       try {
-        const whoResp = await fetch(`https://ipwho.is/${ip}`, { signal: timeoutSignal(8000) })
-        if (whoResp.ok) {
-          const geo = await whoResp.json()
-          if (geo.success) {
-            isp = geo.connection?.isp
-            org = geo.connection?.org
-            asnText = `${geo.connection?.asn || ''}`
-            country = country ?? geo.country
-            city = city ?? geo.city
-          }
+        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(8000) })
+        if (geoResp.ok) {
+          const geo = await geoResp.json()
+          org = geo.org || geo.isp
+          signals.proxy = geo.proxy === true
+          country = country ?? geo.country_name
+          city = city ?? geo.city
         }
       } catch {}
     }
