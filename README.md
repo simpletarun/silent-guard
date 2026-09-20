@@ -51,13 +51,13 @@ Detects cookie theft, fingerprinting, phishing, DNS inconsistencies, and more �
 ## 🚀 Getting Started
 
 ### Download
-Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, extract, and load the **root folder** directly.
+Grab the latest build from [Releases](https://github.com/simpletarun/silent-guard/releases) — download the ZIP, extract, and load the extension.
 
 ### Load in Chrome / Edge / Brave
 1. Open `chrome://extensions` (Chrome), `edge://extensions` (Edge), or `brave://extensions` (Brave)
 2. Enable **Developer mode** (toggle at top right)
 3. Click **Load unpacked**
-4. **Select the root folder** (where `manifest.json` is located — NOT a `dist/` subfolder)
+4. Select the **extracted folder** where `manifest.json` is located
 
 ## 📱 Usage
 
