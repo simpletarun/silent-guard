@@ -41,7 +41,7 @@ Grab the latest build from [Releases](https://github.com/simpletarun/silent-guar
 1. Open `chrome://extensions` (Chrome), `edge://extensions` (Edge), or `brave://extensions` (Brave)
 2. Enable **Developer mode** (toggle at top right)
 3. Click **Load unpacked**
-4. Select the **extracted folder** where `manifest.json` is located
+4. Select the **extracted folder** where `dist` is open 
 
 ## 📱 Usage
 
