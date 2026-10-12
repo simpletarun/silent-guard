@@ -29,10 +29,6 @@ const POLICY_BODY_MIN_CHARS = 800
 const POLICY_TEXT_MAX_CHARS = 120000
 const POLICY_TEXT_MIN_CHARS = 500
 
-const OBSERVER_DEBOUNCE_MS = 2000
-const OBSERVER_MAX_RUNS = 10
-const OBSERVER_MAX_LIFETIME_MS = 30000
-
 const sentLinkUrls = new Set<string>()
 const sentPolicyTextUrls = new Set<string>()
 
@@ -237,11 +233,6 @@ export async function fetchPolicyUrlForProbe(url: string): Promise<void> {
   } catch {}
 }
 
-let observer: MutationObserver | null = null
-let observerTimer: number | null = null
-let observerRuns = 0
-const observerStart = Date.now()
-
 type LinkType = 'privacy' | 'terms' | 'cookies'
 
 function classifyLink(text: string, fullUrl: string): LinkType | null {
@@ -320,34 +311,17 @@ export function detectPolicyLinks(): void {
   } catch {}
 }
 
-function stopObserver(): void {
-  if (observerTimer !== null) { window.clearTimeout(observerTimer); observerTimer = null }
-  if (observer) { observer.disconnect(); observer = null }
-}
-
-function onWindowLoad(): void {
-  detectPolicyLinks()
-}
-
 export function initPolicyDetection(): void {
-  window.addEventListener('load', onWindowLoad, { once: true })
-  if (typeof MutationObserver === 'undefined' || !document.documentElement) return
-  observer = new MutationObserver(() => {
-    if (observerTimer !== null || !isContextValid()) return
-    observerTimer = window.setTimeout(() => {
-      observerTimer = null
-      observerRuns++
-      detectPolicyLinks()
-      // ponytail: hard caps (10 runs / 30s) so a churny SPA can never loop forever
-      if (observerRuns >= OBSERVER_MAX_RUNS || Date.now() - observerStart >= OBSERVER_MAX_LIFETIME_MS) stopObserver()
-    }, OBSERVER_DEBOUNCE_MS)
-  })
-  observer.observe(document.documentElement, { childList: true, subtree: true })
+  // Passive analysis covers the CURRENT page only (maybeSendPolicyText) —
+  // same-origin body text, no fetch, no tabs. Link harvesting
+  // (detectPolicyLinks) runs only when the background asks (FIND_POLICY_LINKS
+  // from the popup/scrape-tab flow): auto-sending POLICY_LINKS_FOUND on every
+  // page load made the background open a policy scrape tab on every site visit.
+  window.addEventListener('load', maybeSendPolicyText, { once: true })
 }
 
 export function stopPolicyDetection(): void {
-  window.removeEventListener('load', onWindowLoad)
-  stopObserver()
+  window.removeEventListener('load', maybeSendPolicyText)
 }
 
 function isPolicyTextUrl(url: string): boolean {

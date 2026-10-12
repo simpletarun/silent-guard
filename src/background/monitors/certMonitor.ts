@@ -119,15 +119,17 @@ export async function checkCert(domain: string): Promise<void> {
 }
 
 export function certTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab): void {
-  if (changeInfo.url && tab.url) {
-    const url = tab.url
-    getSettings().then(s => {
-      if (!s.monitorCertificates) return
-      try {
-        const domain = new URL(url).hostname
-        checkCert(domain).catch(() => {})
-      } catch {}
-    }).catch(() => {})
-  }
+  const url = tab.url || changeInfo.url
+  if (!url || !/^https?:/i.test(url)) return
+  getSettings().then(s => {
+    if (!s.monitorCertificates) return
+    try {
+      const hostname = new URL(url).hostname
+      // chrome://newtab, about:blank and bare hosts ('newtab') are not cert
+      // targets — without this filter every new tab cost a crt.sh fetch.
+      if (!hostname.includes('.') || hostname.endsWith('.')) return
+      checkCert(hostname).catch(() => {})
+    } catch {}
+  }).catch(() => {})
 }
 

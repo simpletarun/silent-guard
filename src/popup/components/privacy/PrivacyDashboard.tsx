@@ -323,6 +323,11 @@ export default function PrivacyDashboard({ category, pageScans, downloadScans, s
         .dl-shield-sub { font-size: 8px; color: var(--text-muted); margin-top: 1px; }
         .dl-shield-item { display: flex; align-items: center; gap: 7px; padding: 5px 0; border-bottom: 1px solid var(--border); }
         .dl-shield-item:last-child { border-bottom: none; }
+        .dl-shield-lst { display: flex; flex-direction: column; max-height: 240px; overflow-y: auto; padding-right: 2px; }
+        .dl-shield-lst::-webkit-scrollbar { width: 6px; }
+        .dl-shield-lst::-webkit-scrollbar-track { background: var(--bg-surface); border-radius: 3px; }
+        .dl-shield-lst::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        .dl-shield-lst::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
         .dl-shield-lv { font-size: 7px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; padding: 2px 5px; border-radius: 3px; flex-shrink: 0; }
         .dl-shield-lv.low { background: var(--success-bg); color: var(--success); }
         .dl-shield-lv.medium { background: var(--warning-bg); color: var(--warning); }

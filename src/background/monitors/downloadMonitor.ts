@@ -124,7 +124,12 @@ export async function handleDownload(downloadItem: chrome.downloads.DownloadItem
       if (settings.autoBlockDownloads) {
         try {
           await chrome.downloads.cancel(downloadItem.id)
-        } catch {}
+        } catch {
+          // Already finished — cancel can't undo it, so remove the risky file
+          // from disk outright (user opted in via Download Shield). Without
+          // this, fast/small risky downloads always slipped through.
+          try { await chrome.downloads.removeFile(downloadItem.id) } catch {}
+        }
       }
     }
 

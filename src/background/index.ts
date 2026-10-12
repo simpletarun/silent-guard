@@ -246,7 +246,7 @@ chrome.runtime.onMessage.addListener((
 
     case 'PING':
       sendResponse({ success: true })
-      return true
+      return false
 
     case 'ADD_EVENT':
       (async () => {
@@ -734,7 +734,7 @@ chrome.runtime.onMessage.addListener((
           const policyUrl = message.policyUrl
           // Explicit retry — the user clicked the button; don't let a recent
           // auto-analysis cooldown/attempt-TTL silently no-op it.
-          if (domain) clearAnalysisHistory(domain)
+          if (domain) await clearAnalysisHistory(domain)
           if (domain && policyUrl) {
             await analyzePolicyUrl(domain, policyUrl)
           } else {

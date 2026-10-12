@@ -39,11 +39,7 @@ async function checkTabs(): Promise<void> {
   for (const tab of tabs) {
     if (!tab.url) continue
     const domain = extractDomain(tab.url)
-    if (domain && shouldCheck(domain)) {
-      checkedDomains.set(domain, Date.now())
-      pruneCheckedDomains()
-      checkIntelDomain(domain)
-    }
+    if (domain && shouldCheck(domain)) checkIntelDomain(domain)
   }
 }
 
@@ -70,11 +66,7 @@ export function threatTabUpdatedHandler(_tabId: number, changeInfo: chrome.tabs.
   getSettings().then(s => {
     if (!s.monitorThreatIntel) return
     const domain = extractDomain(url)
-    if (domain && shouldCheck(domain)) {
-      checkedDomains.set(domain, Date.now())
-      pruneCheckedDomains()
-      checkIntelDomain(domain)
-    }
+    if (domain && shouldCheck(domain)) checkIntelDomain(domain)
   }).catch(() => {})
 }
 
@@ -92,6 +84,13 @@ export async function checkIntelDomain(domain: string): Promise<void> {
       body: `host=${encodeURIComponent(domain)}`,
     })
     if (!resp || !resp.ok) return
+    // Mark as checked only after a successful round-trip — marking before
+    // the fetch burned the whole 24h recheck window on a transient outage
+    // (a domain listed minutes later was never re-checked for a day).
+    if (shouldCheck(domain)) {
+      checkedDomains.set(domain, Date.now())
+      pruneCheckedDomains()
+    }
     const data = await resp.json()
     if (data?.query_status === 'ok' && data?.url_count > 0) {
       const match: ThreatIntelMatch = {

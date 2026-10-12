@@ -1,5 +1,5 @@
 import { initUrlCleaner, stopUrlCleaner } from './urlCleaner'
-import { detectPolicyLinks, handleFindPolicyLinks, initPolicyDetection, stopPolicyDetection, probePolicyPaths, fetchPolicyUrlForProbe } from './policyDetection'
+import { handleFindPolicyLinks, initPolicyDetection, stopPolicyDetection, probePolicyPaths, fetchPolicyUrlForProbe } from './policyDetection'
 import { TRACKER_DOMAINS_LIST } from '../utils/trackerDomains'
 import { classifyAuthFromForm, classifyPasswordInput, getFormSignals, findLogoutIndicator, USERNAME_INPUT_SELECTORS } from '../utils/authRole'
 
@@ -527,16 +527,6 @@ try {
   initUrlCleaner()
   initPolicyDetection()
   startAuthObserver()
-
-  // Injected at document_start — the DOM is empty, so link detection
-  // would find nothing. Run once the DOM is ready (the background also
-  // re-asks via FIND_POLICY_LINKS when the popup opens).
-  const runLinkDetection = () => detectPolicyLinks()
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', runLinkDetection, { once: true })
-  } else {
-    runLinkDetection()
-  }
 } catch { cleanup() }
 
 window.addEventListener('beforeunload', cleanup)

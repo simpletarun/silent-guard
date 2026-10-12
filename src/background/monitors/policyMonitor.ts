@@ -56,11 +56,52 @@ export function isLikelyPolicyText(text: string, minWords: number = MIN_POLICY_W
 
 const domainCooldowns = new Map<string, number>()
 
-// Every analysis attempt (link fetch, scrape, root-page scrape) is recorded
-// here for ATTEMPT_TTL_MS — second-hop link cascades from scraped pages can
-// then never ping-pong between two pages that link each other.
+// Every analysis attempt (link fetch, scrape) is recorded here for
+// ATTEMPT_TTL_MS — second-hop link cascades from scraped pages can then
+// never ping-pong between two pages that link each other.
 const ATTEMPT_TTL_MS = 600000
 const recentAttempts = new Map<string, number>()
+
+// Both Maps are mirrored into chrome.storage.session, which survives MV3
+// service-worker restarts (suspended ~30s after idle, restarted on the next
+// navigation). Memory-only maps made a "5 min per domain" cooldown really
+// "once per SW lifetime" — revisits re-scraped and re-opened policy tabs.
+const COOLDOWN_STORE_KEY = 'policyCooldowns'
+let cooldownsLoaded = false
+let cooldownsLoading: Promise<void> | null = null
+
+async function loadCooldowns(): Promise<void> {
+  if (cooldownsLoaded) return
+  if (cooldownsLoading) return cooldownsLoading
+  cooldownsLoading = (async () => {
+    try {
+      const raw = await chrome.storage.session.get(COOLDOWN_STORE_KEY)
+      const snap = (raw?.[COOLDOWN_STORE_KEY] || {}) as { domains?: Record<string, number>; attempts?: Record<string, number> }
+      const now = Date.now()
+      domainCooldowns.clear()
+      recentAttempts.clear()
+      for (const [d, t] of Object.entries(snap.domains || {})) {
+        if (now - t < POLICY_COOLDOWN_MS) domainCooldowns.set(d, t)
+      }
+      for (const [k, t] of Object.entries(snap.attempts || {})) {
+        if (now - t < ATTEMPT_TTL_MS) recentAttempts.set(k, t)
+      }
+    } catch { /* session storage unavailable — cooldowns fall back to memory */ }
+    cooldownsLoaded = true
+  })()
+  try { await cooldownsLoading } finally { cooldownsLoading = null }
+}
+
+function persistCooldowns(): void {
+  try {
+    chrome.storage.session.set({
+      [COOLDOWN_STORE_KEY]: {
+        domains: Object.fromEntries(domainCooldowns),
+        attempts: Object.fromEntries(recentAttempts),
+      },
+    }).catch(() => {})
+  } catch { /* best-effort on a dying service worker */ }
+}
 
 function attemptKey(url: string): string {
   return url.toLowerCase()
@@ -83,22 +124,26 @@ function markAttempted(url: string): void {
       if (oldest) recentAttempts.delete(oldest[0])
     }
   }
+  persistCooldowns()
 }
 
 // Explicit user action ("Analyze again" button) must not be swallowed by the
 // cooldown or the attempt-TTL — clear both for this domain.
-export function clearAnalysisHistory(domain: string): void {
+export async function clearAnalysisHistory(domain: string): Promise<void> {
+  await loadCooldowns()
   domainCooldowns.delete(domain)
   for (const key of [...recentAttempts.keys()]) {
     if (key.includes('://' + domain + '/') || key.includes('.' + domain + '/') || key.includes('://' + domain)) {
       recentAttempts.delete(key)
     }
   }
+  persistCooldowns()
 }
 
 export function resetAuditCaches(): void {
   // Only cooldowns — pendingProbes/pendingScrapes hold in-flight callbacks.
   domainCooldowns.clear()
+  persistCooldowns()
 }
 
 export function getPolicyDomain(url: string): string | undefined {
@@ -118,6 +163,7 @@ function shouldAnalyzeDomain(domain: string): boolean {
     const oldest = [...domainCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
     if (oldest) domainCooldowns.delete(oldest[0])
   }
+  persistCooldowns()
   return true
 }
 
@@ -145,6 +191,7 @@ export async function handlePolicyLinks(domain: string, links: PolicyLink[], fro
   try {
     const settings = await getSettings()
     if (!settings.monitorPolicy) return
+    await loadCooldowns()
 
     // Found links are higher-signal than URL probing (SPA footers can land
     // AFTER the popup's 2.5s fallback already claimed the cooldown) — so
@@ -179,16 +226,13 @@ export async function handlePolicyLinks(domain: string, links: PolicyLink[], fro
       for (const link of ordered) {
         if (await analyzePolicyUrl(domain, link.url)) break
       }
+      // All found links failed (bot wall, SPA shell, 404): probing the site's
+      // common policy paths is the next best guess. Never render the site's
+      // ROOT in a scrape tab for this — that's a visible tab open/close with
+      // almost no chance of a real policy. Only from a real page: harvested
+      // scrape-tab links cascading would ping-pong between pages.
+      if (!fromScrapeTab) await tryCommonUrls(domain)
     } else if (!fromScrapeTab) {
-      const probed = await tryCommonUrls(domain)
-      // Last resort when probing found nothing (page without a content
-      // script, SPA shell): render the site ROOT in a hidden tab and harvest
-      // its real footer links there. Guarded by the same attempt-TTL.
-      if (!probed && !wasAttemptedRecently(`https://${domain}/`)) {
-        markAttempted(`https://${domain}/`)
-        await scrapePolicyTab(domain, `https://${domain}/`)
-      }
-    } else {
       await tryCommonUrls(domain)
     }
   } catch (e) {
@@ -261,11 +305,14 @@ async function askActiveTabToFetch(url: string): Promise<boolean> {
 // Fallback for policy pages that only render in a browser (JS frameworks
 // serve fetch() an empty shell): open the page in a hidden tab, ask the
 // content script to scrape the rendered text (POLICY_TEXT message), close
-// the tab. Bounded: one at a time, watchdog 12s, only reached when the
+// the tab. Bounded: one per URL, watchdog 12s, only reached when the
 // fetch above found nothing, only for explicitly found links — never for
-// the 30-path probing loop.
+// the 30-path probing loop or a site's root page.
 const SCRAPE_WATCHDOG_MS = 12000
-let scrapePromise: Promise<boolean> | null = null
+// One in-flight scrape per URL (keyed) — a single global promise previously
+// returned the FIRST scrape's result to every concurrent caller and silenced
+// analysis of every other domain.
+const activeScrapes = new Map<string, Promise<boolean>>()
 const pendingScrapes = new Map<number, (result: boolean) => void>()
 
 // The scrape tab's rendered text just arrived (POLICY_TEXT) — resolve the
@@ -278,8 +325,10 @@ export function notifyScrapeComplete(tabId: number | undefined): void {
 }
 
 function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
-  if (scrapePromise) return scrapePromise
-  scrapePromise = new Promise<boolean>(resolve => {
+  const key = attemptKey(url)
+  const inFlight = activeScrapes.get(key)
+  if (inFlight) return inFlight
+  const promise = new Promise<boolean>(resolve => {
     let tabId: number | undefined
     let done = false
     const finish = (result: boolean) => {
@@ -295,7 +344,7 @@ function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
         chrome.tabs.remove(tabId).catch(() => {})
         tabId = undefined
       }
-      setTimeout(() => { scrapePromise = null }, 1000)
+      activeScrapes.delete(key)
       resolve(result)
     }
     const onUpdated = (id: number, info: chrome.tabs.TabChangeInfo) => {
@@ -315,6 +364,11 @@ function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
       pendingScrapeTabs.add(id)
       pendingScrapes.set(id, finish)
       scrapeSiteDomains.set(id, domain)
+      // MV3 has no true background tabs and no stable tab-hide API
+      // (tabHide never shipped), so the scrape tab is created inactive —
+      // it never steals focus — and is closed right after the scrape or
+      // by the watchdog below.
+      /* no hide API — active:false keeps it out of focus; auto-close hides it */
       // The tab may have loaded before the listener attached — check status.
       chrome.tabs.get(id).then(t => {
         if (t.status === 'complete') {
@@ -323,11 +377,13 @@ function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
       }).catch(() => finish(false))
     }).catch(() => finish(false))
   })
-  return scrapePromise
+  activeScrapes.set(key, promise)
+  return promise
 }
 
 export async function analyzePolicyUrl(domain: string, policyUrl: string): Promise<boolean> {
   try {
+    await loadCooldowns()
     markAttempted(policyUrl)
     // Same-site policies fetch cleanly from the page's own context (a
     // service-worker fetch is CORS-blocked by most sites). Cross-site links
@@ -352,6 +408,7 @@ export async function handlePolicyText(domain: string, url: string, text: string
   try {
     const settings = await getSettings()
     if (!settings.monitorPolicy) return false
+    await loadCooldowns()
     if (!skipCooldown && !shouldAnalyzeDomain(domain)) return false
     if (!isLikelyPolicyText(text, DOM_MIN_POLICY_WORDS)) return false
 
@@ -457,6 +514,7 @@ async function doPerformAnalysis(domain: string, text: string, policyUrl: string
 
 export async function analyzeCurrentTab(domain?: string, policyUrl?: string): Promise<void> {
   try {
+    await loadCooldowns()
     if (!domain) {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
       if (!tabs[0]?.url) return

@@ -65,6 +65,79 @@ async function fetchIp(): Promise<string> {
   return ''
 }
 
+// Free, keyless HTTPS geo providers, tried in order. Earlier failures are
+// silent — a dead provider must never spam the service-worker console — and
+// later providers fill only the fields earlier ones left empty.
+interface GeoData {
+  isp?: string
+  org?: string
+  country?: string
+  countryCode?: string
+  city?: string
+  asn?: string
+  proxy?: boolean
+  hosting?: boolean
+}
+
+const GEO_SOURCES: Array<(ip: string) => Promise<GeoData>> = [
+  // ipwho.is — richest free source (ISP, org, ASN, city, country name,
+  // proxy/hosting flags). ~1.5k requests/day free.
+  async ip => {
+    const r = await fetch(`https://ipwho.is/${ip}?fields=success,country,city,isp,org,asn,proxy,hosting`, { signal: timeoutSignal(10000) })
+    if (!r.ok) return {}
+    const d = await r.json()
+    if (!d || d.success === false) return {}
+    return { isp: d.isp, org: d.org || d.isp, country: d.country, city: d.city, asn: d.asn != null ? String(d.asn) : undefined, proxy: d.proxy === true, hosting: d.hosting === true }
+  },
+  // ipapi.co — backup (~1k requests/day free, no key).
+  async ip => {
+    const r = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(10000) })
+    if (!r.ok) return {}
+    const d = await r.json()
+    if (!d || d.error) return {}
+    return { isp: d.isp || d.org, org: d.org, country: d.country_name, city: d.city, asn: d.asn ? String(d.asn).replace(/^AS/i, '') : undefined, proxy: d.proxy === true, hosting: d.hosting === true }
+  },
+  // api.ip.sb — backup (already used for the IP lookup itself).
+  async ip => {
+    const r = await fetch(`https://api.ip.sb/geoip/${ip}`, { signal: timeoutSignal(10000) })
+    if (!r.ok) return {}
+    const d = await r.json()
+    if (!d) return {}
+    return { isp: d.isp, org: d.organization || d.org, country: d.country, countryCode: d.country_code, city: d.city, asn: d.asn != null ? String(d.asn).replace(/^AS/i, '') : undefined }
+  },
+  // ipinfo.io — last resort (no ISP field, country is a 2-letter code,
+  // ~50 requests/day without a token).
+  async ip => {
+    const r = await fetch(`https://ipinfo.io/${ip}/json`, { signal: timeoutSignal(10000) })
+    if (!r.ok) return {}
+    const d = await r.json()
+    if (!d || d.bogon) return {}
+    const m = /AS(\d+)/i.exec(d.org || '')
+    return { org: d.org, countryCode: d.country, city: d.city, asn: m ? m[1] : undefined }
+  },
+]
+
+async function fetchGeoData(ip: string): Promise<GeoData> {
+  const merged: GeoData = {}
+  for (const source of GEO_SOURCES) {
+    try {
+      const part = await source(ip)
+      merged.isp = merged.isp || part.isp
+      merged.org = merged.org || part.org
+      merged.country = merged.country || part.country
+      merged.countryCode = merged.countryCode || part.countryCode
+      merged.city = merged.city || part.city
+      merged.asn = merged.asn || part.asn
+      merged.proxy = merged.proxy || part.proxy
+      merged.hosting = merged.hosting || part.hosting
+      if (merged.isp && merged.country && merged.city && merged.asn) break
+    } catch { /* provider unreachable/blocked — try the next one */ }
+  }
+  // A 2-letter country code (ipinfo.io / ip.sb) beats "Unknown".
+  if (!merged.country && merged.countryCode) merged.country = merged.countryCode
+  return merged
+}
+
 export async function checkPublicIp(): Promise<void> {
   if (ipCheckInFlight) return
   ipCheckInFlight = true
@@ -86,63 +159,33 @@ export async function checkPublicIp(): Promise<void> {
     const state = await getSecurityState()
     const prev = state.network
 
-    let isp: string | undefined
-    let country: string | undefined
-    let city: string | undefined
-    let org: string | undefined
-    let asnText = ''
-    let isVpn = false
-    let isProxy = false
-    let isTor = false
-    const signals: ConnectionSignals = { vpn: false, proxy: false, tor: false, hosting: false }
+    // Free geo APIs rate-limit hard (ipwho.is ~1.5k/day, ipapi.co 1k/day) and
+    // the ipCheck alarm fires every 5 min — blindly re-fetching drained them
+    // and left ISP/Location permanently "Unknown". Re-fetch only when the IP
+    // changed, the stored data is missing, or the data is stale (>6h).
+    const needGeo = !prev || prev.publicIp !== ip || !(prev.isp && (prev.country || prev.city)) || Date.now() - (prev.lastChecked || 0) > 6 * 60 * 60 * 1000
 
-    // VPN/proxy/TOR detection - using ipwho.is (HTTPS) as primary source.
-    // ipwho.is provides proxy, hosting, and ASN information.
-    // IP 171.61.27.161 appears to be a CDN/IP with limited geolocation data.
-    try {
-      const whoResp = await fetch(`https://ipwho.is/${ip}?fields=status,country,city,isp,org,asn,proxy,hosting`, { signal: timeoutSignal(15000) })
-      if (whoResp.ok) {
-        const geo = await whoResp.json()
-        if (geo.success) {
-          org = geo.org || geo.isp
-          isp = geo.isp
-          asnText = `${geo.asn || ''}`
-          signals.proxy = geo.proxy === true
-          signals.hosting = geo.hosting === true
-          country = country ?? geo.country
-          city = city ?? geo.city
-        } else {
-          dbg('ipwho.is returned unsuccessful for', ip, geo)
-        }
-      } else {
-        dbg('ipwho.is request failed for', ip, whoResp.status)
-      }
-    } catch (e) {
-      dbg('ipwho.is error for', ip, e)
+    let isp = prev?.isp
+    let country = prev?.country
+    let city = prev?.city
+    let asnText = prev?.asn || ''
+    let isVpn = prev?.isVpn || false
+    let isProxy = prev?.isProxy || false
+    let isTor = prev?.isTor || false
+
+    if (needGeo) {
+      const geo = await fetchGeoData(ip)
+      isp = geo.isp
+      country = geo.country
+      city = geo.city
+      asnText = geo.asn || ''
+      const signals: ConnectionSignals = { vpn: false, proxy: !!geo.proxy, tor: false, hosting: !!geo.hosting }
+      const verdict = classifyConnection(geo.org || geo.isp, geo.isp, signals, asnText)
+      isVpn = verdict.isVpn
+      isProxy = verdict.isProxy
+      isTor = verdict.isTor
+      if (!isp && !country) dbg('geo lookup returned nothing for', ip)
     }
-
-    // Fallback to ipapi.co if ISP/org still missing
-    if (!org || !isp) {
-      try {
-        const geoResp = await fetch(`https://ipapi.co/${ip}/json/`, { signal: timeoutSignal(15000) })
-        if (geoResp.ok) {
-          const geo = await geoResp.json()
-          org = org || geo.org || geo.isp
-          isp = isp || geo.org || geo.isp
-          signals.proxy = geo.proxy === true
-          country = country ?? geo.country_name
-          city = city ?? geo.city
-          dbg('ipapi.co fallback for', ip, { org: geo.org, isp: geo.isp, country: geo.country_name, city: geo.city })
-        }
-      } catch (e) {
-        dbg('ipapi.co error for', ip, e)
-      }
-    }
-
-    const verdict = classifyConnection(org, isp, signals, asnText)
-    isVpn = verdict.isVpn
-    isProxy = verdict.isProxy
-    isTor = verdict.isTor
 
     if (prev && prev.publicIp !== ip) {
       const prevInfo = prev.country && country && prev.country !== country ? ` (country: ${prev.country} \u2192 ${country})` : ''
@@ -185,7 +228,7 @@ export async function checkPublicIp(): Promise<void> {
     await updateSecurityState({ network })
     await recalculateCategoryScore('network')
   } catch (e) {
-    console.error('IP check failed:', e)
+    dbg('IP check failed:', e)
   } finally {
     ipCheckInFlight = false
   }
