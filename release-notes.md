@@ -18,5 +18,18 @@
 - Shows 'Cloud/Proxy location limited' instead of just 'Unknown' when VPN/proxy location data unavailable
 - Search input with real-time filtering in Extensions tab
 
+### Bug Fixes (four-agent code audit & dead-code cleanup)
+- **Fix: "Analyze again" silently no-op'd on any previously-analyzed site.** The cached-report short-circuit made an explicit Analyze click skip probing; it now forces a fresh analysis (`force` flag) while auto-analysis still respects the cache.
+- **Fix: a Chrome-dangerous download from a trusted host earned a bogus +1 / "untrusted source domain" penalty** (it also mislabeled the risk), and the disk-cleanup fallback now deletes a finished file only when Chrome itself flagged it — a hostname heuristic alone never destroys a file you deliberately saved.
+- **Fix: CLEAR_ALL_DATA could "resurrect" wiped rows.** Phishing results, password strengths and threat-intel matches were read-then-replaced outside the storage mutex; they now write under the mutex, so a wipe landing mid-write stays wiped.
+- **Fix: login form memory lost on service-worker restart** — password-form timestamps (used to prove accounts) now persist in `chrome.storage.session`.
+- **Fix: notification throttle reset every worker restart** — a page could re-burst notification spam after each wake; the 15-minute throttle now survives restarts.
+- **Fix: failed crt.sh fetch burned the 5-minute cert cooldown** — the window is claimed only after a valid response.
+- **Fix: shared policy URL skipped analysis for the second domain** — scrape dedupe is keyed by URL *and* domain; the scrape watchdog now closes a stray tab that wins the `tabs.create` race.
+- **Fix: hourly timeline alarm re-created on every wake** (reset its period) — now created only when missing.
+- **Fix: popup toggles flashed off before settings loaded, and a failed GET_SETTINGS flipped stored values** — settings now initialize with defaults.
+- **Fix: Policy page showed no category score header** (the prop was dropped) — restored, matching every other category page.
+- **Dead code removed**: `ADD_EVENT` and `GET_POLICY_REPORT` message handlers (no senders), the `forensic_snapshot` event type, unused settings keys (`monitorPasswords`, `monitorPrivacy`, `forensicSnapshots`), `getRiskLevelColor`, a dead `refresh` prop, and two unreferenced CSS classes.
+
 ### Version
 - Updated to v1.1.2
