@@ -12,7 +12,7 @@ import { resetAuditCaches as resetThreatAuditCaches } from './monitors/threatInt
 import { resetAuditCaches as resetDnsAuditCaches } from './monitors/dnsMonitor'
 import { loadState, getSecurityState, acknowledgeEvent, updateSettings, getSettings, addCategoryEvent, updateSecurityState, mutateSecurityState, clearAllData } from './storage'
 import { recalculateCategoryScore, recalculateAllScores } from './engine'
-import { BackgroundMessage, RiskEvent, GlobalSettings, SecurityCategory, SensorUsage, PageScanResult, DEFAULT_GLOBAL_SETTINGS } from '../types'
+import { BackgroundMessage, RiskEvent, GlobalSettings, SensorUsage, PageScanResult, DEFAULT_GLOBAL_SETTINGS } from '../types'
 import { updateBadge } from './badge'
 import { normalizeDomain, canonicalAccountDomain, isValidDomain } from '../utils/domain'
 import { dbg, setDebugEnabled } from '../utils/debug'
@@ -27,7 +27,7 @@ import { tabCreatedHandler, tabRemovedHandler, tabUpdatedHandler, startAnomalyMo
 import { startCorrelationEngine, runCorrelation } from './monitors/correlationEngine'
 import { startTimelineMonitor, checkWeeklyDigest, recordTimelineEntry } from './monitors/timelineDigest'
 import { storageChangedHandler } from './monitors/autoResponse'
-import { startPolicyMonitor, handlePolicyLinks, handlePolicyText, analyzeCurrentTab, analyzePolicyUrl, getPolicyDomain, getPolicyReport, getPolicyReports, isScrapeTab, notifyScrapeComplete, notifyProbeComplete, getScrapeSiteDomain, clearAnalysisHistory } from './monitors/policyMonitor'
+import { startPolicyMonitor, handlePolicyLinks, handlePolicyText, analyzeCurrentTab, analyzePolicyUrl, getPolicyDomain, getPolicyReports, isScrapeTab, notifyScrapeComplete, notifyProbeComplete, getScrapeSiteDomain, clearAnalysisHistory } from './monitors/policyMonitor'
 import { startDownloadMonitor } from './monitors/downloadMonitor'
 import { executePanic, recoverFromPanic, startPanicListeners, restoreLockdownState } from './monitors/panicButton'
 
@@ -212,6 +212,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 const PASSWORD_FORM_TTL_MS = 600000
 const recentPasswordForms = new Map<string, number>()
 
+// The map is memory-only — an MV3 worker restart drops it and the next
+// ACCOUNT_LOGGED_IN from a fresh session stops proving accounts. Mirror to
+// session storage (cleared at browser shutdown, the right scope) and hydrate
+// lazily on the read path.
+const PASSWORD_FORMS_STORAGE_KEY = 'sgRecentPasswordForms'
+
+function persistPasswordForms(): void {
+  chrome.storage.session.set({ [PASSWORD_FORMS_STORAGE_KEY]: Object.fromEntries(recentPasswordForms) }).catch(() => {})
+}
+
+async function loadPasswordForms(): Promise<void> {
+  try {
+    const saved = await chrome.storage.session.get(PASSWORD_FORMS_STORAGE_KEY)
+    const entries = (saved as Record<string, unknown>)[PASSWORD_FORMS_STORAGE_KEY]
+    if (entries && typeof entries === 'object') {
+      const now = Date.now()
+      for (const [k, t] of Object.entries(entries)) {
+        if (typeof t === 'number' && now - t < PASSWORD_FORM_TTL_MS) recentPasswordForms.set(k, t)
+      }
+    }
+  } catch { /* storage unavailable — fall back to memory-only */ }
+}
+
 chrome.runtime.onMessage.addListener((
   message: BackgroundMessage,
   sender: chrome.runtime.MessageSender,
@@ -226,7 +249,7 @@ chrome.runtime.onMessage.addListener((
   // Read-only state queries are also popup-only: no content script uses
   // them, and an attacker-influenced content script must not be able to
   // exfiltrate accounts/IP/fingerprints to a page.
-  const privileged = ['PANIC', 'PANIC_RECOVER', 'CLEAR_ALL_DATA', 'UPDATE_SETTINGS', 'SCAN_EXTENSIONS', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT', 'ADD_EVENT', 'POPUP_OPENED', 'ANALYZE_POLICY', 'GET_STATE', 'GET_SETTINGS', 'GET_POLICY_REPORTS', 'GET_POLICY_REPORT']
+  const privileged = ['PANIC', 'PANIC_RECOVER', 'CLEAR_ALL_DATA', 'UPDATE_SETTINGS', 'SCAN_EXTENSIONS', 'ADD_ACCOUNT', 'REMOVE_ACCOUNT', 'POPUP_OPENED', 'ANALYZE_POLICY', 'GET_STATE', 'GET_SETTINGS', 'GET_POLICY_REPORTS']
   if (privileged.includes(message.type) && !fromExtensionPage) {
     sendResponse({ success: false, error: 'Forbidden: popup-only command' })
     return
@@ -247,15 +270,6 @@ chrome.runtime.onMessage.addListener((
     case 'PING':
       sendResponse({ success: true })
       return false
-
-    case 'ADD_EVENT':
-      (async () => {
-        await addCategoryEvent(message.category as SecurityCategory, message.event as RiskEvent)
-        await notifyRiskEvent(message.event as RiskEvent)
-        await recalculateCategoryScore(message.category as SecurityCategory)
-        sendResponse({ success: true })
-      })().catch(() => { sendResponse({ success: false }) })
-      return true
 
     case 'ACKNOWLEDGE_EVENT':
       (async () => {
@@ -549,6 +563,7 @@ chrome.runtime.onMessage.addListener((
               if (now - t > PASSWORD_FORM_TTL_MS) recentPasswordForms.delete(k)
             }
           }
+          persistPasswordForms()
         }
         await evaluatePasswordStrength({
           url: message.url || '',
@@ -600,6 +615,7 @@ chrome.runtime.onMessage.addListener((
         // Weak evidence (logout link only) keeps the strict tracked/dismissed
         // gate so arbitrary sites never auto-add.
         const dismissed = new Set(state.dismissedAccounts || [])
+        await loadPasswordForms()
         const formSeenAt = recentPasswordForms.get(canonical)
         // Corroboration gate: a bare "logged in" report (even with a role,
         // which the page world can fabricate) must not mint an account on a
@@ -738,7 +754,9 @@ chrome.runtime.onMessage.addListener((
           if (domain && policyUrl) {
             await analyzePolicyUrl(domain, policyUrl)
           } else {
-            await analyzeCurrentTab(domain, policyUrl)
+            // force — the cached-report short-circuit must not silently no-op
+            // an explicit "Analyze again" click.
+            await analyzeCurrentTab(domain, policyUrl, true)
           }
           sendResponse({ success: true })
         } catch (e) {
@@ -758,18 +776,6 @@ chrome.runtime.onMessage.addListener((
           sendResponse({ success: false, reports: [] })
         }
       })().catch(() => { sendResponse({ success: false, reports: [] }) })
-      return true
-
-    case 'GET_POLICY_REPORT':
-      (async () => {
-        try {
-          const report = await getPolicyReport(message.domain)
-          sendResponse(report ?? null)
-        } catch (e) {
-          console.error('GET_POLICY_REPORT error:', e)
-          sendResponse(null)
-        }
-      })().catch(() => { sendResponse(null) })
       return true
 
     default:

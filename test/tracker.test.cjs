@@ -52,6 +52,14 @@ test('trusted domain does NOT defuse a Chrome dangerous-download verdict', () =>
   assert.ok(r.riskLevel === 'high' || r.riskLevel === 'critical', `expected high/critical, got ${r.riskLevel}`)
 })
 
+test('Chrome-dangerous verdict on a trusted domain is not blamed on the host', () => {
+  // Regression: the untrusted-source branch didn't exclude trusted domains, so
+  // a Chrome-flagged file from a trusted host scored +1 with a bogus reason.
+  const r = evaluateDownloadRisk('report.pdf', 'https://download.microsoft.com/report.pdf', true)
+  assert.equal(r.riskLevel, 'medium')
+  assert.ok(!r.reason.includes('untrusted source domain'), `reason: ${r.reason}`)
+})
+
 test('insecure http escalates risk', () => {
   const plain = evaluateDownloadRisk('file.exe', 'https://cdn.host/file.exe', false)
   const insecure = evaluateDownloadRisk('file.exe', 'http://cdn.host/file.exe', false)

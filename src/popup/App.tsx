@@ -197,7 +197,6 @@ export default function App() {
             onAcknowledge={actions.acknowledgeEvent}
             onAddAccount={actions.addAccount}
             onRemoveAccount={removeAccount}
-            refresh={refresh}
           />
         )
       case 'policy':

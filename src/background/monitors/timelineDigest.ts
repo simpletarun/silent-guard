@@ -4,7 +4,11 @@ import { getOverallScore } from '../engine'
 
 export function startTimelineMonitor(): void {
   recordTimelineEntry()
-  chrome.alarms.create('timelineRecord', { periodInMinutes: 60 })
+  // Alarms survive worker restarts — creating unconditionally reset the
+  // hourly period on every wake. Create only if missing.
+  chrome.alarms.get('timelineRecord').then(existing => {
+    if (!existing) chrome.alarms.create('timelineRecord', { periodInMinutes: 60 })
+  }).catch(() => {})
 }
 
 export async function recordTimelineEntry(): Promise<void> {

@@ -126,17 +126,6 @@ export function getRiskLevel(score: number): RiskLevel {
   return 'dangerous'
 }
 
-export function getRiskLevelColor(level: RiskLevel): string {
-  const map: Record<RiskLevel, string> = {
-    excellent: '#2ed573',
-    safe: '#2ed573',
-    medium: '#ffa502',
-    risky: '#ff6348',
-    dangerous: '#ff4757',
-  }
-  return map[level]
-}
-
 export function getRiskLevelLabel(level: RiskLevel): string {
   const map: Record<RiskLevel, string> = {
     excellent: 'Excellent',

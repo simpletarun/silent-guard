@@ -1,5 +1,5 @@
 import { PasswordStrengthResult, RiskEvent, PasswordFormInfo } from '../../types'
-import { addCategoryEvent, getSecurityState, getSettings, hasRecentCategoryEvent, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSettings, hasRecentCategoryEvent, mutateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 function evaluateFromMetadata(info: PasswordFormInfo): PasswordStrengthResult {
@@ -50,9 +50,12 @@ export function evaluatePasswordStrength(info: PasswordFormInfo): Promise<Passwo
     const settings = await getSettings()
     if (!settings.monitorPasswordStrength) return evaluateFromMetadata(info)
     const result = evaluateFromMetadata(info)
-    const existing = (await getSecurityState()).passwordStrengths || []
-    const strengths = [result, ...existing].slice(0, 20)
-    await updateSecurityState({ passwordStrengths: strengths })
+    // Mutate under the storage mutex — a read-then-replace would resurrect
+    // cleared rows when a wipe lands between the read and the write.
+    await mutateSecurityState(state => {
+      const existing = state.passwordStrengths || []
+      state.passwordStrengths = [result, ...existing].slice(0, 20)
+    })
 
     if (result.score < 40) {
       // Re-visited login pages re-fire this on every load — dedupe.
@@ -83,19 +86,22 @@ export function evaluatePasswordStrength(info: PasswordFormInfo): Promise<Passwo
 
 export function startPasswordStrengthMonitor(): void {
   setTimeout(async () => {
-    const state = await getSecurityState()
-    if ((state.passwordStrengths || []).length === 0) {
-      const pending: PasswordStrengthResult = {
-        url: '',
-        domain: '',
-        score: -1,
-        crackTime: '',
-        suggestions: ['Visit a login page to enable password scanning'],
-        warning: 'No password forms detected yet',
+    // Read-modify-write under the mutex — a read-then-replace would resurrect
+    // the placeholder row after a CLEAR_ALL_DATA lands mid-write.
+    let wrote = false
+    await mutateSecurityState(state => {
+      if ((state.passwordStrengths || []).length === 0) {
+        wrote = true
+        state.passwordStrengths = [{
+          url: '',
+          domain: '',
+          score: -1,
+          crackTime: '',
+          suggestions: ['Visit a login page to enable password scanning'],
+          warning: 'No password forms detected yet',
+        }]
       }
-      const strengths = [pending]
-      await updateSecurityState({ passwordStrengths: strengths })
-      await recalculateCategoryScore('passwords')
-    }
+    })
+    if (wrote) await recalculateCategoryScore('passwords')
   }, 30000)
 }

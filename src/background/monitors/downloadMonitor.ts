@@ -75,7 +75,7 @@ export function evaluateDownloadRisk(
   // on a trusted host scored 0 ('low') and skipped every safety net.
   if (domain && isTrustedDomain(domain) && !chromeDangerous) {
     score = Math.max(0, score - 2)
-  } else if (domain && score > 0) {
+  } else if (domain && !isTrustedDomain(domain) && score > 0) {
     score += 1
     reasons.push('untrusted source domain')
   }
@@ -101,14 +101,16 @@ export async function handleDownload(downloadItem: chrome.downloads.DownloadItem
   // as if safe. Same key never re-runs (onChanged fires once per change).
   const scanKey = `${downloadItem.id}:${downloadItem.danger || 'safe'}`
   if (scannedDownloadIds.has(scanKey)) return
-  scannedDownloadIds.add(scanKey)
-  if (scannedDownloadIds.size > 300) {
-    const oldest = scannedDownloadIds.values().next().value
-    if (oldest !== undefined) scannedDownloadIds.delete(oldest)
-  }
   try {
     const fileName = downloadItem.filename.split(/[\\/]/).pop() || 'download'
     const danger = typeof downloadItem.danger === 'string' ? downloadItem.danger : 'safe'
+    if (scannedDownloadIds.size > 300) {
+      const oldest = scannedDownloadIds.values().next().value
+      if (oldest !== undefined) scannedDownloadIds.delete(oldest)
+    }
+    // Claim the key only on success — a throw before this would burn the key
+    // so the async Chrome danger verdict never gets re-evaluated.
+    scannedDownloadIds.add(scanKey)
     // finalUrl reflects redirects; url alone misses downloads behind
     // shorteners/redirects.
     const { riskLevel, reason, ext, domain } = evaluateDownloadRisk(
@@ -125,10 +127,12 @@ export async function handleDownload(downloadItem: chrome.downloads.DownloadItem
         try {
           await chrome.downloads.cancel(downloadItem.id)
         } catch {
-          // Already finished — cancel can't undo it, so remove the risky file
-          // from disk outright (user opted in via Download Shield). Without
-          // this, fast/small risky downloads always slipped through.
-          try { await chrome.downloads.removeFile(downloadItem.id) } catch {}
+          // Already finished — the host-name heuristic alone must never
+          // destroy a file the user deliberately saved, so delete from disk
+          // only when Chrome itself flagged the download as dangerous.
+          if (downloadItem.state === 'complete' && isChromeDangerous(danger)) {
+            try { await chrome.downloads.removeFile(downloadItem.id) } catch {}
+          }
         }
       }
     }

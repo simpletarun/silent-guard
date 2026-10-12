@@ -6,6 +6,30 @@ import { getSettings } from './storage'
 const NOTIFICATION_THROTTLE_MS = 15 * 60 * 1000
 const lastShown: Map<string, number> = new Map()
 
+// The throttle map is memory-only by default — an MV3 worker restart wipes
+// it and lets a page re-burst notification spam. Mirror it to session
+// storage (cleared at browser shutdown, exactly the right scope).
+const THROTTLE_STORAGE_KEY = 'sgNotifyThrottle'
+let throttleHydrated = false
+
+async function hydrateThrottle(): Promise<void> {
+  if (throttleHydrated) return
+  throttleHydrated = true
+  try {
+    const saved = await chrome.storage.session.get(THROTTLE_STORAGE_KEY)
+    const entries = (saved as Record<string, unknown>)[THROTTLE_STORAGE_KEY]
+    if (entries && typeof entries === 'object') {
+      for (const [k, v] of Object.entries(entries)) {
+        if (typeof v === 'number') lastShown.set(k, v)
+      }
+    }
+  } catch { /* storage unavailable — fall back to memory-only */ }
+}
+
+function persistThrottle(): void {
+  chrome.storage.session.set({ [THROTTLE_STORAGE_KEY]: Object.fromEntries(lastShown) }).catch(() => {})
+}
+
 export async function notifyRiskEvent(event: RiskEvent): Promise<void> {
   const settings = await getSettings()
   if (!settings.notificationsEnabled) return
@@ -14,11 +38,13 @@ export async function notifyRiskEvent(event: RiskEvent): Promise<void> {
   const allowed = event.severity === 'high' || event.severity === 'critical' ||
     (!settings.onlyHighRiskAlerts && event.severity === 'medium')
   if (!allowed) return
+  await hydrateThrottle()
 
   const throttleKey = `${event.type}:${event.source}`
   const last = lastShown.get(throttleKey) || 0
   if (Date.now() - last < NOTIFICATION_THROTTLE_MS) return
   lastShown.set(throttleKey, Date.now())
+  persistThrottle()
   // Evict the oldest entry — clear() would reset every active throttle and
   // let a page re-burst notifications it already burned.
   if (lastShown.size > 200) {
@@ -49,6 +75,8 @@ let notifListenersAdded = false
 
 export function resetNotificationThrottles(): void {
   lastShown.clear()
+  throttleHydrated = true
+  persistThrottle()
 }
 
 export function setupNotificationHandlers(): void {

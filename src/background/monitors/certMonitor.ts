@@ -55,18 +55,21 @@ export async function checkCert(domain: string): Promise<void> {
   const lastCheck = certCooldowns.get(domain)
   if (lastCheck && Date.now() - lastCheck < CERT_COOLDOWN_MS) return
 
-  certCooldowns.set(domain, Date.now())
-  if (certCooldowns.size > 100) {
-    const oldest = [...certCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
-    if (oldest) certCooldowns.delete(oldest[0])
-  }
-
   try {
     const resp = await fetchCrtSh(domain)
     if (!resp || !resp.ok) return
 
     const raw = await resp.json()
-    const entries: CrtshEntry[] = Array.isArray(raw) ? raw : []
+    if (!Array.isArray(raw)) return
+    const entries: CrtshEntry[] = raw
+    // Claim the cooldown only on a real response — a failed fetch must not
+    // burn the 5-minute window (a busted request flips cert checks into a
+    // permanent false pass, hiding real anomalies).
+    certCooldowns.set(domain, Date.now())
+    if (certCooldowns.size > 100) {
+      const oldest = [...certCooldowns.entries()].sort((a, b) => a[1] - b[1])[0]
+      if (oldest) certCooldowns.delete(oldest[0])
+    }
     if (entries.length === 0) return
 
     const now = Date.now()

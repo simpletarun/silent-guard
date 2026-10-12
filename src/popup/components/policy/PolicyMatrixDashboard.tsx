@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { CategoryState } from '../../../types'
 import { usePolicyReports } from '../../hooks/useSecurityEngine'
 import PolicyReportDetail from './PolicyReportDetail'
+import CategoryScore from '../shared/CategoryScore'
 import { showToast } from '../shared/Toast'
 
 function formatTimeAgo(timestamp: number): string {
@@ -22,7 +23,7 @@ interface Props {
   lastProbes?: string[]
 }
 
-export default function PolicyMatrixDashboard({ lastProbes }: Props) {
+export default function PolicyMatrixDashboard({ category, lastProbes }: Props) {
   const { reports, loading, refresh, analyze } = usePolicyReports()
   const [currentDomain, setCurrentDomain] = useState<string | null>(null)
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null)
@@ -116,6 +117,7 @@ export default function PolicyMatrixDashboard({ lastProbes }: Props) {
 
   return (
     <div className="px-dashboard px-scroll-container">
+      {category && <CategoryScore score={category.score} />}
       {/* Danger Alert Banner */}
       {showDangerAlert && currentReport && (
         <div className="px-danger-alert">

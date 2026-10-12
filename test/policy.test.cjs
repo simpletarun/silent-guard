@@ -322,7 +322,7 @@ const { cleanExcerpt } = require('./build/src/utils/excerpt.js')
 
 test('cleanExcerpt cuts at word boundaries with an ellipsis', () => {
   const out = cleanExcerpt('alpha beta gamma delta epsilon zeta eta', 20)
-  assert.equal(out, 'alpha beta gamma \u2026')
+  assert.equal(out, 'alpha beta gamma …')
 })
 
 test('cleanExcerpt passes short text through and collapses whitespace', () => {

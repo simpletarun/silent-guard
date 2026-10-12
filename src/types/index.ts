@@ -22,7 +22,6 @@ export type RiskEventType =
   | 'threat_intel_match'
   | 'anomaly_detected'
   | 'correlated_incident'
-  | 'forensic_snapshot'
   | 'policy_risk'
   | 'suspicious_download'
   | 'panic_triggered'
@@ -334,8 +333,6 @@ export interface GlobalSettings {
   autoScanExtensions: boolean
   monitorCookies: boolean
   monitorNetwork: boolean
-  monitorPasswords: boolean
-  monitorPrivacy: boolean
   onlyHighRiskAlerts: boolean
   extensionWhitelist: string[]
   monitorPhishing: boolean
@@ -349,7 +346,6 @@ export interface GlobalSettings {
   monitorCorrelation: boolean
   autoKillSessions: boolean
   autoRotateCredentials: boolean
-  forensicSnapshots: boolean
   weeklyDigest: boolean
   monitorPolicy: boolean
   autoBlockDownloads: boolean
@@ -361,8 +357,6 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   autoScanExtensions: true,
   monitorCookies: true,
   monitorNetwork: true,
-  monitorPasswords: true,
-  monitorPrivacy: true,
   onlyHighRiskAlerts: true,
   extensionWhitelist: [],
   monitorPhishing: true,
@@ -376,7 +370,6 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   monitorCorrelation: true,
   autoKillSessions: false,
   autoRotateCredentials: false,
-  forensicSnapshots: true,
   weeklyDigest: true,
   monitorPolicy: true,
   autoBlockDownloads: false,
@@ -386,7 +379,6 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
 export type BackgroundMessage =
   | { type: 'PING' }
   | { type: 'GET_STATE' }
-  | { type: 'ADD_EVENT'; category: SecurityCategory; event: RiskEvent }
   | { type: 'ACKNOWLEDGE_EVENT'; eventId: string }
   | { type: 'CLEAR_ALL_DATA' }
   | { type: 'GET_SETTINGS' }
@@ -406,7 +398,6 @@ export type BackgroundMessage =
   | { type: 'POLICY_TEXT'; url: string; text: string; source: 'probe'; probed?: string[]; siteDomain?: string }
   | { type: 'ANALYZE_POLICY'; domain: string; policyUrl?: string }
   | { type: 'GET_POLICY_REPORTS' }
-  | { type: 'GET_POLICY_REPORT'; domain: string }
   | { type: 'PANIC' }
   | { type: 'PANIC_RECOVER' }
 

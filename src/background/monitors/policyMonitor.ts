@@ -309,9 +309,9 @@ async function askActiveTabToFetch(url: string): Promise<boolean> {
 // fetch above found nothing, only for explicitly found links — never for
 // the 30-path probing loop or a site's root page.
 const SCRAPE_WATCHDOG_MS = 12000
-// One in-flight scrape per URL (keyed) — a single global promise previously
-// returned the FIRST scrape's result to every concurrent caller and silenced
-// analysis of every other domain.
+// One in-flight scrape per (URL, domain) — keying by URL alone made a second
+// domain sharing the same policy URL inherit the first scrape and skip its
+// own analysis.
 const activeScrapes = new Map<string, Promise<boolean>>()
 const pendingScrapes = new Map<number, (result: boolean) => void>()
 
@@ -325,7 +325,7 @@ export function notifyScrapeComplete(tabId: number | undefined): void {
 }
 
 function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
-  const key = attemptKey(url)
+  const key = attemptKey(url) + '|' + domain
   const inFlight = activeScrapes.get(key)
   if (inFlight) return inFlight
   const promise = new Promise<boolean>(resolve => {
@@ -361,6 +361,12 @@ function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
       const id = tab.id
       if (typeof id !== 'number') { finish(false); return }
       tabId = id
+      if (done) {
+        // The watchdog already fired while create() was in flight — finish()
+        // is done-guarded and won't touch this tab, so close the stray one.
+        chrome.tabs.remove(id).catch(() => {})
+        return
+      }
       pendingScrapeTabs.add(id)
       pendingScrapes.set(id, finish)
       scrapeSiteDomains.set(id, domain)
@@ -368,7 +374,6 @@ function scrapePolicyTab(domain: string, url: string): Promise<boolean> {
       // (tabHide never shipped), so the scrape tab is created inactive —
       // it never steals focus — and is closed right after the scrape or
       // by the watchdog below.
-      /* no hide API — active:false keeps it out of focus; auto-close hides it */
       // The tab may have loaded before the listener attached — check status.
       chrome.tabs.get(id).then(t => {
         if (t.status === 'complete') {
@@ -424,9 +429,11 @@ export async function handlePolicyText(domain: string, url: string, text: string
   }
 }
 
-export async function tryCommonUrls(domain: string): Promise<boolean> {
+export async function tryCommonUrls(domain: string, force = false): Promise<boolean> {
   try {
-    if (await getPolicyReport(domain)) return true
+    // A cached report short-circuits auto-analysis; an explicit "Analyze
+    // again" (force) must probe the domain anyway.
+    if (!force && (await getPolicyReport(domain))) return true
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
     const tab = tabs[0]
     if (typeof tab?.id !== 'number' || !tab.url) return false
@@ -512,7 +519,7 @@ async function doPerformAnalysis(domain: string, text: string, policyUrl: string
   }
 }
 
-export async function analyzeCurrentTab(domain?: string, policyUrl?: string): Promise<void> {
+export async function analyzeCurrentTab(domain?: string, policyUrl?: string, force = false): Promise<void> {
   try {
     await loadCooldowns()
     if (!domain) {
@@ -525,7 +532,7 @@ export async function analyzeCurrentTab(domain?: string, policyUrl?: string): Pr
     if (policyUrl) {
       await analyzePolicyUrl(domain, policyUrl)
     } else {
-      await tryCommonUrls(domain)
+      await tryCommonUrls(domain, force)
     }
   } catch (e) {
     console.error('analyzeCurrentTab failed:', e)

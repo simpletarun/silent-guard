@@ -11,7 +11,7 @@ export async function updateBadge(): Promise<void> {
       }
     }
     const cats = Object.values(state.categories).filter(c => c.id !== 'overview')
-    const scores = cats.map(c => c.score.total)
+    const scores = cats.map(c => c.score?.total ?? 50)
     const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0
 
     if (unacked > 0) {

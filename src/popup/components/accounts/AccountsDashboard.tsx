@@ -12,10 +12,9 @@ interface Props {
   onAcknowledge: (id: string) => void
   onAddAccount: (domain: string, name: string) => void
   onRemoveAccount: (domain: string) => void
-  refresh?: () => Promise<unknown> | void
 }
 
-export default function AccountsDashboard({ category, accounts, onAcknowledge, onAddAccount, onRemoveAccount, refresh }: Props) {
+export default function AccountsDashboard({ category, accounts, onAcknowledge, onAddAccount, onRemoveAccount }: Props) {
   const cat = category || { id: 'accounts', label: 'Accounts', icon: '👤', enabled: true, score: { total: 50, maxScore: 100, factors: [] }, events: [], metrics: [], actions: [], settings: {}, lastScan: 0 }
   const [newDomain, setNewDomain] = React.useState('')
   const [newName, setNewName] = React.useState('')

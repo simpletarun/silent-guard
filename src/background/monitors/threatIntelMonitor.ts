@@ -1,6 +1,6 @@
 import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, ThreatIntelMatch } from '../../types'
-import { addCategoryEvent, getSecurityState, getSettings, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSettings, mutateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 // Domain → last-checked timestamp. A URLHaus listing can appear hours after
@@ -114,13 +114,18 @@ let matchQueue: Promise<unknown> = Promise.resolve()
 
 function storeThreatMatch(match: ThreatIntelMatch): Promise<void> {
   matchQueue = matchQueue.then(async () => {
-    const existing = (await getSecurityState()).threatIntelMatches || []
-    // Re-checks run daily by design — a domain that stays listed must not
-    // re-add its row or re-alert every day.
-    const prior = existing.find(m => m.ioc === match.ioc && m.feed === match.feed)
+    // Read-modify-write under the storage mutex — a read-then-replace would
+    // resurrect wiped matches when a CLEAR_ALL_DATA lands mid-write.
+    let prior = false
+    await mutateSecurityState(state => {
+      const existing = state.threatIntelMatches || []
+      // Re-checks run daily by design — a domain that stays listed must not
+      // re-add its row or re-alert every day.
+      prior = !!existing.find(m => m.ioc === match.ioc && m.feed === match.feed)
+      if (prior) return
+      state.threatIntelMatches = [match, ...existing].slice(0, 100)
+    })
     if (prior) return
-    const matches = [match, ...existing].slice(0, 100)
-    await updateSecurityState({ threatIntelMatches: matches })
 
     const severity = match.severity as string
     const eventSeverity = severity === 'critical' ? 'critical' : severity === 'high' ? 'high' : 'medium'

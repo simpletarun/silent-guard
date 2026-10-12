@@ -1,6 +1,6 @@
 import { timeoutSignal } from '../../utils/timeoutSignal'
 import { RiskEvent, PhishingResult } from '../../types'
-import { addCategoryEvent, getSecurityState, getSettings, hasRecentCategoryEvent, updateSecurityState } from '../storage'
+import { addCategoryEvent, getSettings, hasRecentCategoryEvent, mutateSecurityState } from '../storage'
 import { recalculateCategoryScore } from '../engine'
 
 let cachedDomains: { domains: string[]; fetchedAt: number } = { domains: [], fetchedAt: 0 }
@@ -100,12 +100,16 @@ async function checkPhishing(url: string): Promise<void> {
     }
 
     phishQueue = phishQueue.then(async () => {
-      const existing = (await getSecurityState()).phishingResults || []
-      // Dedupe per domain — tab updates re-fire checkPhishing for the same
-      // page; a fresh entry per navigation flooded the list and PhishTank.
-      const withoutDomain = existing.filter(r => r.domain !== domain)
-      const results = [result, ...withoutDomain].slice(0, 50)
-      await updateSecurityState({ phishingResults: results })
+      // Read-modify-write under the storage mutex — a read-then-replace here
+      // let a CLEAR_ALL_DATA (landing between read and write) resurrect the
+      // rows the wipe just deleted.
+      await mutateSecurityState(state => {
+        const existing = state.phishingResults || []
+        // Dedupe per domain — tab updates re-fire checkPhishing for the same
+        // page; a fresh entry per navigation flooded the list and PhishTank.
+        const withoutDomain = existing.filter(r => r.domain !== domain)
+        state.phishingResults = [result, ...withoutDomain].slice(0, 50)
+      })
 
       if (isPhishing) {
         // Same-domain re-visits must not re-alert on every navigation.

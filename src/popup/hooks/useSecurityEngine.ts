@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { SecurityState, GlobalSettings, BackgroundMessage, PolicyReport } from '../../types'
+import { SecurityState, GlobalSettings, BackgroundMessage, PolicyReport, DEFAULT_GLOBAL_SETTINGS } from '../../types'
 import { showToast } from '../components/shared/Toast'
 
 // Wake up the background service worker (MV3 non-persistent)
@@ -141,7 +141,10 @@ export function useSecurityState() {
 }
 
 export function useSettings() {
-  const [settings, setSettings] = useState<GlobalSettings | null>(null)
+  // Defaults first — a null initial made every toggle flash off before the
+  // first GET_SETTINGS round-trip, and a failed GET_SETTINGS wrote `true` to
+  // whatever the previous toggle state was.
+  const [settings, setSettings] = useState<GlobalSettings>(DEFAULT_GLOBAL_SETTINGS)
 
   const refresh = useCallback(async () => {
     const resp = await sendMessage<{ success: boolean; settings?: GlobalSettings }>({ type: 'GET_SETTINGS' })
