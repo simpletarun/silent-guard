@@ -4,7 +4,7 @@
 
 **Real-time browser security monitoring for Chromium browsers**
 
-![Version](https://img.shields.io/badge/version-1.1.1-00A8FF?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.1.3-00A8FF?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-00E676?style=flat-square)
 ![Chrome](https://img.shields.io/badge/chrome-MV3-071A2E?style=flat-square) ![Edge](https://img.shields.io/badge/edge-supported-00E676?style=flat-square) ![Brave](https://img.shields.io/badge/brave-supported-FF6B35?style=flat-square)
 ![React](https://img.shields.io/badge/react-18-00E5FF?style=flat-square)

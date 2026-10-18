@@ -1,4 +1,14 @@
-﻿## What's Changed
+﻿## What's Changed (v1.1.3)
+
+### Fixes
+- **Fix: downloaded source ZIP had no build to load.** `dist/` was gitignored, so `Code → Download ZIP` contained source only and could not be loaded in Chrome. The built `dist/` is now committed, so a fresh source download includes a ready-to-load extension. Release assets continue to ship `silent-guard-1.1.3-dist.zip` (build only).
+
+### Version
+- Updated to v1.1.3
+
+---
+
+## What's Changed
 
 ### Features
 - **Extension Search**: Added search box to All Installed Extensions dashboard for quick filtering by extension name
